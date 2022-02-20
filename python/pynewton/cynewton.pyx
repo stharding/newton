@@ -1,7 +1,10 @@
+from PIL import Image, ImageDraw
 import random
 
 
-class Polynomial:
+cdef class Polynomial:
+    cdef list coefficients
+
     def __init__(self, *coefficients):
         """input: coefficients are in the form a_n, ...a_1, a_0"""
         self.coefficients = list(coefficients)  # tuple is turned into a list
@@ -12,9 +15,14 @@ class Polynomial:
         of a polynomial.
 
         """
-        return f"Polynomial({', '.join(map(str, self.coefficients))})"
+        return f"Polynomial({repr(self.coefficients).strip('[]')})"
 
-    def __call__(self, x):
+    def __call__(self, complex x):
+        return self._call(x)
+
+    cdef complex _call(self, complex x):
+        cdef complex res, coeff
+
         res = 0
         for coeff in self.coefficients:
             res = res * x + coeff
@@ -57,7 +65,13 @@ class Polynomial:
         return res.lstrip("+")  # removing leading '+'0
 
 
-def affine(floor_in, val, ceil_in, floor_out, ceil_out):
+cdef float affine(
+    float floor_in,
+    float val,
+    float ceil_in,
+    float floor_out,
+    float ceil_out
+):
     """
     :param floor_in: the floor of the input range
     :param val: the position in the input range to affine
@@ -67,25 +81,27 @@ def affine(floor_in, val, ceil_in, floor_out, ceil_out):
     :return: val affined onto the output range
     """
 
-    floor_in = float(floor_in)
-    val = float(val)
-    ceil_in = float(ceil_in)
-    floor_out = float(floor_out)
-    ceil_out = float(ceil_out)
-
     return ((val - floor_in) / (ceil_in - floor_in)) * (
         ceil_out - floor_out
     ) + floor_out
 
 
-def newton_fract(
-    poly: Polynomial = None,
-    tolerance=0.0001,
-    imax=30,
+cpdef newton_fract(
+    Polynomial poly = None,
+    str img_name="out.png",
+    float tolerance=0.0001,
+    int imax=30,
     dims=(500, 500),
-    window=(-1, 1, -1, 1),
+    window=(-1, 1, 1, -1),
 ):
-    screen = pygame.display.set_mode(dims)
+    cdef int i, j, count, scaled_count
+    cdef float _i, _j, diff
+    cdef complex val, initial, root, old, ratio, c_val
+    cdef set roots
+    cdef Polynomial poly_prime
+
+    img = Image.new(mode="RGB", size=dims)
+    img_draw = ImageDraw.ImageDraw(img)
     colors = {}
     if poly is None:
         poly = Polynomial(1, 0, 0, -1)
@@ -101,9 +117,9 @@ def newton_fract(
             for count in range(imax):
                 old = val
                 try:
-                    ratio = poly(val) / poly_prime(val)
+                    ratio = poly._call(val) / poly_prime._call(val)
                 except ZeroDivisionError:
-                    screen.set_at((i, j), pygame.Color(0, 0, 0))
+                    img_draw.point((i, j), (0, 0, 0))
                     break
                 val = val - ratio
                 diff = abs(old - val)
@@ -114,29 +130,30 @@ def newton_fract(
                             represented = True
                     if not represented:
                         roots.add(val)
-                        colors[val] = pygame.Color(
-                            random.randint(0, 150),
-                            random.randint(0, 150),
-                            random.randint(0, 150),
+                        colors[val] = (
+                            random.randint(0, 100),
+                            random.randint(0, 100),
+                            random.randint(0, 100),
                         )
 
-                    scaled_count = int(affine(0, count, imax, 0, 105))
-                    c_val = None
+                    scaled_count = int(affine(0, count, imax, 0, 155))
+                    c_val = 0
                     for root in roots:
                         if abs(val - root) < tolerance * 2:
                             c_val = root
 
-                    color = pygame.Color(
-                        colors[c_val].r + scaled_count,
-                        colors[c_val].g + scaled_count,
-                        colors[c_val].b + scaled_count,
+                    img_draw.point(
+                        (i, j),
+                        (
+                            colors[c_val][0] + scaled_count,
+                            colors[c_val][1] + scaled_count,
+                            colors[c_val][2] + scaled_count,
+                        ),
                     )
-
-                    screen.set_at((i, j), color)
                     break
             else:
-                screen.set_at((i, j), pygame.Color(150, 150, 150))
+                img_draw.point((i, j), (150, 150, 150))
 
     p_roots = {f"{root:5g}" for root in roots}
     print(f"{len(roots)} roots in {poly}: {p_roots}")
-    pygame.display.flip()
+    img.save(img_name)

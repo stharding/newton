@@ -14,7 +14,7 @@ class Polynomial:
         of a polynomial.
 
         """
-        return f"Polynomial({', '.join(map(str, self.coefficients))})"
+        return f"Polynomial({repr(self.coefficients).strip('[]')})"
 
     def __call__(self, x):
         res = 0

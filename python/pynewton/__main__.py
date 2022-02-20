@@ -49,7 +49,7 @@ def main():
     parser.add_argument(
         "--window",
         type=int,
-        default=[-1, 1, -1, 1],
+        default=[-1, 1, 1, -1],
         nargs=4,
         help="The fractal space coordinates to render",
     )
@@ -61,10 +61,16 @@ def main():
     else:
         from .pynewton import Polynomial, newton_fract
 
-    print(args.coefficients)
+    poly = Polynomial(*args.coefficients)
+    print(f"Newton fractal for: {poly}")
+    print(f"img_name: {args.out_file}")
+    print(f"tolerance: {args.tolerance}")
+    print(f"imax: {args.imax}")
+    print(f"dims: {args.dims}")
+    print(f"window: {args.window}")
 
     newton_fract(
-        poly=Polynomial(*args.coefficients),
+        poly=poly,
         img_name=args.out_file,
         tolerance=args.tolerance,
         imax=args.imax,
