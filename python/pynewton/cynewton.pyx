@@ -108,9 +108,9 @@ cpdef newton_fract(
     poly_prime = poly.derivative()
     roots = set()
     for i in range(dims[0]):
-        _i = affine(0, i, dims[0], window[0], window[1])
+        _i = affine(0, i, dims[0], window[0], window[2])
         for j in range(dims[1]):
-            _j = affine(0, j, dims[1], window[2], window[3])
+            _j = affine(0, j, dims[1], window[1], window[3])
             initial = complex(_i, _j)
 
             val = initial
