@@ -2,18 +2,6 @@ import pygame
 import random
 
 
-def zip_longest(iter1, iter2, fillvalue=None):
-
-    for i in range(max(len(iter1), len(iter2))):
-        if i >= len(iter1):
-            yield (fillvalue, iter2[i])
-        elif i >= len(iter2):
-            yield (iter1[i], fillvalue)
-        else:
-            yield (iter1[i], iter2[i])
-        i += 1
-
-
 class Polynomial:
     def __init__(self, *coefficients):
         """input: coefficients are in the form a_n, ...a_1, a_0"""
@@ -36,20 +24,7 @@ class Polynomial:
     def degree(self):
         return len(self.coefficients)
 
-    def __add__(self, other):
-        c1 = self.coefficients[::-1]
-        c2 = other.coefficients[::-1]
-        res = [sum(t) for t in zip_longest(c1, c2, fillvalue=0)]
-        return Polynomial(*res)
-
-    def __sub__(self, other):
-        c1 = self.coefficients[::-1]
-        c2 = other.coefficients[::-1]
-
-        res = [t1 - t2 for t1, t2 in zip_longest(c1, c2, fillvalue=0)]
-        return Polynomial(*res)
-
-    def derivative(self):
+    def derivative(self) -> "Polynomial":
         derived_coeffs = []
         exponent = len(self.coefficients) - 1
         for i in range(len(self.coefficients) - 1):
@@ -121,7 +96,7 @@ def newton_fract(
         _i = affine(0, i, dims[0], window[0], window[1])
         for j in range(dims[1]):
             _j = affine(0, j, dims[1], window[2], window[3])
-            initial = _i + 1j * _j
+            initial = complex(_i, _j)
 
             val = initial
             for count in range(imax):
