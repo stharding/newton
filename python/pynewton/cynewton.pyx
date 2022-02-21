@@ -1,13 +1,15 @@
+from libcpp.vector cimport vector
+
 from PIL import Image, ImageDraw
 import random
 
 
 cdef class Polynomial:
-    cdef list coefficients
+    cdef vector[int] coefficients
 
     def __init__(self, *coefficients):
         """input: coefficients are in the form a_n, ...a_1, a_0"""
-        self.coefficients = list(coefficients)  # tuple is turned into a list
+        self.coefficients = coefficients
 
     def __repr__(self):
         """
@@ -85,6 +87,11 @@ cdef float affine(
         ceil_out - floor_out
     ) + floor_out
 
+cdef struct Pixel:
+    int r
+    int g
+    int b
+
 
 cpdef newton_fract(
     Polynomial poly = None,
@@ -96,9 +103,10 @@ cpdef newton_fract(
 ):
     cdef int i, j, count, scaled_count
     cdef float _i, _j, diff
-    cdef complex val, initial, root, old, ratio, c_val
+    cdef complex val, initial, root, old, ratio, c_val, numerator, denominator
     cdef set roots
     cdef Polynomial poly_prime
+    cdef vector[Pixel] points
 
     img = Image.new(mode="RGB", size=dims)
     img_draw = ImageDraw.ImageDraw(img)
@@ -107,20 +115,21 @@ cpdef newton_fract(
         poly = Polynomial(1, 0, 0, -1)
     poly_prime = poly.derivative()
     roots = set()
-    for i in range(dims[0]):
-        _i = affine(0, i, dims[0], window[0], window[2])
-        for j in range(dims[1]):
-            _j = affine(0, j, dims[1], window[1], window[3])
+    for j in range(dims[1]):
+        _j = affine(0, j, dims[1], window[1], window[3])
+        for i in range(dims[0]):
+            _i = affine(0, i, dims[0], window[0], window[2])
             initial = complex(_i, _j)
 
             val = initial
             for count in range(imax):
                 old = val
-                try:
-                    ratio = poly._call(val) / poly_prime._call(val)
-                except ZeroDivisionError:
-                    img_draw.point((i, j), (0, 0, 0))
+                denominator = poly_prime._call(val)
+                numerator = poly._call(val)
+                if denominator.real == 0 and denominator.imag == 0:
+                    points.push_back(Pixel(0, 0, 0))
                     break
+                ratio = numerator / denominator
                 val = val - ratio
                 diff = abs(old - val)
                 if diff < tolerance:
@@ -141,19 +150,18 @@ cpdef newton_fract(
                     for root in roots:
                         if abs(val - root) < tolerance * 2:
                             c_val = root
-
-                    img_draw.point(
-                        (i, j),
-                        (
+                    points.push_back(
+                        Pixel(
                             colors[c_val][0] + scaled_count,
                             colors[c_val][1] + scaled_count,
                             colors[c_val][2] + scaled_count,
-                        ),
+                        )
                     )
                     break
             else:
-                img_draw.point((i, j), (150, 150, 150))
+                points.push_back(Pixel(150, 150, 150))
 
+    img.putdata([(p.r, p.g, p.b) for p in points])
     p_roots = {f"{root:5g}" for root in roots}
     print(f"{len(roots)} roots in {poly}: {p_roots}")
     img.save(img_name)
