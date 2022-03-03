@@ -1,2 +1,11 @@
+*.so
+*.egg-info
+cynewton.c
+cynewton.cpp
+out.png
+target
+build
+.vscode
+*.swp
 *.pyc
 __pycache__/*
