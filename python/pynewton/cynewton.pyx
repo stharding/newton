@@ -127,7 +127,7 @@ cpdef newton_fract(
                 denominator = poly_prime._call(val)
                 numerator = poly._call(val)
                 if denominator.real == 0 and denominator.imag == 0:
-                    points.push_back(Pixel(0, 0, 0))
+                    points.push_back(Pixel(100, 100, 100))
                     break
                 ratio = numerator / denominator
                 val = val - ratio
