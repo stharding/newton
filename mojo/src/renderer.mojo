@@ -1,4 +1,4 @@
-"""Newton fractal GPU renderer - Python-importable module."""
+"""Fractal GPU renderer - Python-importable module."""
 
 from os import abort
 from python import Python, PythonObject
@@ -466,9 +466,9 @@ fn get_gpu_name() raises -> PythonObject:
 # ============================================================================
 
 @export
-fn PyInit_newton_renderer() -> PythonObject:
+fn PyInit_renderer() -> PythonObject:
     try:
-        var m = PythonModuleBuilder("newton_renderer")
+        var m = PythonModuleBuilder("renderer")
         m.def_function[render_fractal]("render_newton", docstring="Render Newton fractal")
         m.def_function[render_mandelbrot]("render_mandelbrot", docstring="Render Mandelbrot set")
         m.def_function[render_julia]("render_julia", docstring="Render Julia set")

@@ -12,7 +12,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "x11")
 
 # Import Mojo module
 import mojo.importer
-import newton_renderer
+import renderer
 
 import pygame
 import numpy as np
@@ -95,10 +95,10 @@ def main():
 
     # Check GPU
     print("Checking GPU...")
-    if not newton_renderer.has_gpu():
+    if not renderer.has_gpu():
         print("No GPU found!")
         return
-    print(f"GPU: {newton_renderer.get_gpu_name()}")
+    print(f"GPU: {renderer.get_gpu_name()}")
 
     # Initialize pygame
     pygame.init()
@@ -602,7 +602,7 @@ def main():
 
             # Single Mojo call for GPU rendering
             if fractal_type == NEWTON:
-                rgb_array = newton_renderer.render_newton(
+                rgb_array = renderer.render_newton(
                     (
                         width,
                         height,
@@ -619,7 +619,7 @@ def main():
                     )
                 )
             elif fractal_type == MANDELBROT:
-                rgb_array = newton_renderer.render_mandelbrot(
+                rgb_array = renderer.render_mandelbrot(
                     (
                         width,
                         height,
@@ -632,7 +632,7 @@ def main():
                     )
                 )
             elif fractal_type == JULIA:
-                rgb_array = newton_renderer.render_julia(
+                rgb_array = renderer.render_julia(
                     (
                         width,
                         height,
@@ -649,7 +649,7 @@ def main():
                     )
                 )
             elif fractal_type == BURNING_SHIP:
-                rgb_array = newton_renderer.render_burning_ship(
+                rgb_array = renderer.render_burning_ship(
                     (
                         width,
                         height,
@@ -662,7 +662,7 @@ def main():
                     )
                 )
             elif fractal_type == TRICORN:
-                rgb_array = newton_renderer.render_tricorn(
+                rgb_array = renderer.render_tricorn(
                     (
                         width,
                         height,
@@ -675,7 +675,7 @@ def main():
                     )
                 )
             elif fractal_type == MANDELBULB:
-                rgb_array = newton_renderer.render_mandelbulb(
+                rgb_array = renderer.render_mandelbulb(
                     (
                         width,
                         height,

@@ -6,7 +6,7 @@ This document describes each Mojo file in the fractal viewer project.
 
 ## Core Files
 
-### `newton_renderer.mojo`
+### `renderer.mojo`
 **Purpose:** Python-importable GPU module for the interactive fractal viewer (`viewer.py`).
 
 **What it does:**
@@ -112,7 +112,7 @@ fn main() raises:
 ```
 viewer.py (Python)
     │
-    └── imports → newton_renderer.mojo (Python exports, buffer management)
+    └── imports → renderer.mojo (Python exports, buffer management)
                       │
                       ├── imports → kernels_newton.mojo
                       ├── imports → kernels_2d.mojo
