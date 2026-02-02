@@ -19,7 +19,7 @@ from kernels_3d import mandelbulb_kernel
 # ============================================================================
 
 @export
-fn render_fractal(py_args: PythonObject) raises -> PythonObject:
+fn render_newton(py_args: PythonObject) raises -> PythonObject:
     """Render Newton fractal to numpy array.
 
     Args is a tuple: (width, height, coeffs, left, right, top, bottom, tolerance, imax, color_seed, glow_intensity, zoom)
@@ -469,7 +469,7 @@ fn get_gpu_name() raises -> PythonObject:
 fn PyInit_renderer() -> PythonObject:
     try:
         var m = PythonModuleBuilder("renderer")
-        m.def_function[render_fractal]("render_newton", docstring="Render Newton fractal")
+        m.def_function[render_newton]("render_newton", docstring="Render Newton fractal")
         m.def_function[render_mandelbrot]("render_mandelbrot", docstring="Render Mandelbrot set")
         m.def_function[render_julia]("render_julia", docstring="Render Julia set")
         m.def_function[render_burning_ship]("render_burning_ship", docstring="Render Burning Ship fractal")
