@@ -11,77 +11,72 @@ This document describes each Mojo file in the fractal viewer project.
 
 **What it does:**
 - Exports functions callable from Python via `mojo.importer`
-- Renders Newton, Mandelbrot, Julia, Burning Ship, Tricorn, and Mandelbulb fractals on the GPU
-- Returns numpy arrays for display in pygame
+- Imports kernels from separate modules and exposes them as Python functions
+- Handles GPU buffer allocation, kernel dispatch, and numpy array conversion
 
-**How it works:**
-1. **GPU Kernels:** Each fractal type has its own kernel function:
-   - `newton_kernel` - Newton-Raphson root finding with Horner's method
-   - `mandelbrot_kernel` - Classic z = z² + c iteration
-   - `julia_kernel` - Julia set with complex power support (z^(a+bi))
-   - `burning_ship_kernel` - z = (|Re(z)| + i|Im(z)|)² + c
-   - `tricorn_kernel` - z = conj(z)² + c (Mandelbar)
-   - `mandelbulb_kernel` - 3D ray-marched Mandelbulb fractal
+**Exports:**
+- `render_newton` - Newton fractal with root discovery and glow effect
+- `render_mandelbrot` - Classic Mandelbrot set
+- `render_julia` - Julia set with complex power support
+- `render_burning_ship` - Burning Ship fractal
+- `render_tricorn` - Tricorn (Mandelbar) fractal
+- `render_mandelbulb` - 3D ray-marched Mandelbulb
+- `has_gpu`, `get_gpu_name` - GPU availability checks
 
-2. **Imports helper modules:**
-   - `gpu_math` - PTX intrinsics for fast GPU math
-   - `fractals_3d` - 3D fractal distance estimators
+---
 
-3. **Python Module Registration:** `PyInit_newton_renderer()` uses `PythonModuleBuilder` to expose functions.
+### `kernels_2d.mojo`
+**Purpose:** 2D escape-time fractal kernels.
 
-4. **Memory Flow:**
-   ```
-   Python args → DeviceBuffer → GPU kernel → HostBuffer → numpy array → Python
-   ```
+**Kernels:**
+- `mandelbrot_kernel` - z = z² + c iteration
+- `julia_kernel` - z = z^power + c with complex power support
+- `burning_ship_kernel` - z = (|Re(z)| + i|Im(z)|)² + c
+- `tricorn_kernel` - z = conj(z)² + c
+
+All use smooth iteration coloring with cosine gradient palette.
+
+---
+
+### `kernels_newton.mojo`
+**Purpose:** Newton fractal kernels (special two-pass rendering).
+
+**Kernels:**
+- `newton_kernel` - Newton-Raphson iteration, outputs (z_re, z_im, iterations) per pixel
+- `colorize_kernel` - Colors pixels based on closest root with zoom-adaptive glow
+
+**Constants:** Glow effect parameters (`GLOW_BASE`, `GLOW_RANGE`, etc.)
+
+---
+
+### `kernels_3d.mojo`
+**Purpose:** 3D ray-marched fractal kernels.
+
+**Kernels:**
+- `mandelbulb_kernel` - Full ray marching with camera controls, surface normals, Phong shading
 
 ---
 
 ### `gpu_math.mojo`
 **Purpose:** GPU math helper functions using PTX intrinsics for NVIDIA GPUs.
 
-**What it does:**
-- Provides fast approximations of common math operations using GPU-native instructions
-- Designed for use in GPU kernels where standard library functions may not be optimal
-
 **Functions:**
-- **Basic PTX intrinsics:**
-  - `gpu_sin`, `gpu_cos` - Using `sin.approx.ftz.f32`, `cos.approx.ftz.f32`
-  - `gpu_exp2`, `gpu_log2` - Using `ex2.approx.ftz.f32`, `lg2.approx.f32`
-  - `gpu_sqrt`, `gpu_rsqrt` - Using `sqrt.approx.ftz.f32`, `rsqrt.approx.ftz.f32`
-- **Derived functions (built on PTX intrinsics):**
-  - `gpu_atan` - Polynomial approximation with range reduction
-  - `gpu_atan2` - Full quadrant-aware arctangent
-  - `gpu_pow` - Using `2^(exp * log2(base))`
-  - `gpu_acos` - Using `atan2(sqrt(1-x²), x)`
+- **Basic PTX intrinsics:** `gpu_sin`, `gpu_cos`, `gpu_exp2`, `gpu_log2`, `gpu_sqrt`, `gpu_rsqrt`
+- **Derived functions:** `gpu_atan`, `gpu_atan2`, `gpu_pow`, `gpu_acos`
 
 ---
 
 ### `fractals_3d.mojo`
-**Purpose:** 3D fractal distance estimators and ray marching utilities.
-
-**What it does:**
-- Provides distance estimator functions for 3D fractals
-- Defines ray marching constants
+**Purpose:** 3D fractal distance estimators and ray marching constants.
 
 **Contents:**
 - **Constants:** `MAX_STEPS`, `MAX_DIST`, `EPSILON`, `NORMAL_EPSILON`
-- **Functions:**
-  - `mandelbulb_de` - Distance estimator for Mandelbulb using triplex power formula in spherical coordinates
+- **Functions:** `mandelbulb_de` - Distance estimator using triplex power formula
 
 ---
 
 ### `moclap.mojo`
 **Purpose:** Command-line argument parser using Mojo's reflection system.
-
-**What it does:**
-- Parses CLI arguments into a user-defined struct
-- Auto-generates `--help` output from struct field names/types
-- Supports strings, booleans, integers, and floats
-
-**How it works:**
-- Uses `struct_field_names`, `struct_field_types` from the `reflection` module
-- Iterates over `argv()` matching `--field_name` patterns
-- Uses `__struct_field_ref` to get mutable references to struct fields
 
 **Usage:**
 ```mojo
@@ -100,39 +95,15 @@ fn main() raises:
 ### `newton.mojo`
 **Purpose:** CPU-only Newton fractal generator (baseline implementation).
 
-**What it does:**
-- Generates Newton fractal images using pure Mojo on CPU
-- Outputs PNG via Python PIL
-
-**How it works:**
-1. **Polynomial struct:** Stores coefficients, evaluates using Horner's method, computes derivative
-2. **Newton iteration:** `z = z - p(z)/p'(z)` until convergence
-3. **Root tracking:** Discovers roots and assigns random colors
-4. **Output:** Uses PIL's `putdata()` for bulk pixel write
-
 ---
 
 ### `newton_gpu.mojo`
-**Purpose:** GPU implementation - Newton kernel on GPU, colorization on CPU.
-
-**What it does:**
-- GPU computes Newton iteration for all pixels in parallel
-- CPU scans results to find roots and assign colors
-- Outputs PNG via PIL
-
-**How it works:**
-1. **GPU Kernel:** Each thread computes one pixel's final z-value and iteration count
-   - Uses `@parameter for` to unroll coefficient loop at compile time
-2. **CPU Colorization:** Sequential scan of GPU output to discover roots and color pixels
+**Purpose:** Standalone GPU Newton fractal generator (outputs PNG).
 
 ---
 
 ### `gpu_test.mojo`
 **Purpose:** Minimal GPU test to verify setup works.
-
-**What it does:**
-- Simple kernel where each thread writes its index
-- Verifies DeviceContext, buffer allocation, kernel launch, and copy-back
 
 ---
 
@@ -141,13 +112,17 @@ fn main() raises:
 ```
 viewer.py (Python)
     │
-    └── imports → newton_renderer.mojo (GPU kernels + Python module)
+    └── imports → newton_renderer.mojo (Python exports, buffer management)
                       │
-                      ├── imports → gpu_math.mojo (PTX intrinsics)
+                      ├── imports → kernels_newton.mojo
+                      ├── imports → kernels_2d.mojo
+                      ├── imports → kernels_3d.mojo
+                      │                 │
+                      │                 └── imports → fractals_3d.mojo
+                      │                                   │
+                      │                                   └── imports → gpu_math.mojo
                       │
-                      └── imports → fractals_3d.mojo (3D distance estimators)
-                                        │
-                                        └── imports → gpu_math.mojo
+                      └── (kernels import gpu_math.mojo as needed)
 
 Standalone executables:
     newton.mojo      (CPU baseline)
@@ -191,16 +166,4 @@ ctx.enqueue_function[my_kernel[layout], my_kernel[layout]](
 
 ctx.enqueue_copy(host_buf, device_buf)
 ctx.synchronize()
-```
-
-### Polynomial Evaluation (Horner's Method)
-```mojo
-# p(z) = a_n*z^n + ... + a_0
-var p_re = 0.0
-var p_im = 0.0
-for i in range(num_coeffs):
-    var c = coeffs[i]
-    var new_re = p_re * z_re - p_im * z_im + c
-    var new_im = p_re * z_im + p_im * z_re
-    p_re, p_im = new_re, new_im
 ```
