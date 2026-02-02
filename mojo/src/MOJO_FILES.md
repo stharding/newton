@@ -11,7 +11,7 @@ This document describes each Mojo file in the fractal viewer project.
 
 **What it does:**
 - Exports functions callable from Python via `mojo.importer`
-- Renders Newton, Mandelbrot, Julia, Burning Ship, and Tricorn fractals on the GPU
+- Renders Newton, Mandelbrot, Julia, Burning Ship, Tricorn, and Mandelbulb fractals on the GPU
 - Returns numpy arrays for display in pygame
 
 **How it works:**
@@ -21,11 +21,11 @@ This document describes each Mojo file in the fractal viewer project.
    - `julia_kernel` - Julia set with complex power support (z^(a+bi))
    - `burning_ship_kernel` - z = (|Re(z)| + i|Im(z)|)² + c
    - `tricorn_kernel` - z = conj(z)² + c (Mandelbar)
+   - `mandelbulb_kernel` - 3D ray-marched Mandelbulb fractal
 
-2. **Custom GPU Math Functions:** Implements Float32 trig using PTX assembly:
-   - `gpu_sin`, `gpu_cos` - Using `sin.approx.ftz.f32`, `cos.approx.ftz.f32`
-   - `gpu_sqrt`, `gpu_exp2`, `gpu_log2` - Using PTX intrinsics
-   - `gpu_atan`, `gpu_atan2` - Taylor series polynomial approximation
+2. **Imports helper modules:**
+   - `gpu_math` - PTX intrinsics for fast GPU math
+   - `fractals_3d` - 3D fractal distance estimators
 
 3. **Python Module Registration:** `PyInit_newton_renderer()` uses `PythonModuleBuilder` to expose functions.
 
@@ -33,6 +33,40 @@ This document describes each Mojo file in the fractal viewer project.
    ```
    Python args → DeviceBuffer → GPU kernel → HostBuffer → numpy array → Python
    ```
+
+---
+
+### `gpu_math.mojo`
+**Purpose:** GPU math helper functions using PTX intrinsics for NVIDIA GPUs.
+
+**What it does:**
+- Provides fast approximations of common math operations using GPU-native instructions
+- Designed for use in GPU kernels where standard library functions may not be optimal
+
+**Functions:**
+- **Basic PTX intrinsics:**
+  - `gpu_sin`, `gpu_cos` - Using `sin.approx.ftz.f32`, `cos.approx.ftz.f32`
+  - `gpu_exp2`, `gpu_log2` - Using `ex2.approx.ftz.f32`, `lg2.approx.f32`
+  - `gpu_sqrt`, `gpu_rsqrt` - Using `sqrt.approx.ftz.f32`, `rsqrt.approx.ftz.f32`
+- **Derived functions (built on PTX intrinsics):**
+  - `gpu_atan` - Polynomial approximation with range reduction
+  - `gpu_atan2` - Full quadrant-aware arctangent
+  - `gpu_pow` - Using `2^(exp * log2(base))`
+  - `gpu_acos` - Using `atan2(sqrt(1-x²), x)`
+
+---
+
+### `fractals_3d.mojo`
+**Purpose:** 3D fractal distance estimators and ray marching utilities.
+
+**What it does:**
+- Provides distance estimator functions for 3D fractals
+- Defines ray marching constants
+
+**Contents:**
+- **Constants:** `MAX_STEPS`, `MAX_DIST`, `EPSILON`, `NORMAL_EPSILON`
+- **Functions:**
+  - `mandelbulb_de` - Distance estimator for Mandelbulb using triplex power formula in spherical coordinates
 
 ---
 
@@ -108,6 +142,12 @@ fn main() raises:
 viewer.py (Python)
     │
     └── imports → newton_renderer.mojo (GPU kernels + Python module)
+                      │
+                      ├── imports → gpu_math.mojo (PTX intrinsics)
+                      │
+                      └── imports → fractals_3d.mojo (3D distance estimators)
+                                        │
+                                        └── imports → gpu_math.mojo
 
 Standalone executables:
     newton.mojo      (CPU baseline)
