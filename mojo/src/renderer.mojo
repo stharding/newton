@@ -7,7 +7,7 @@ from random import random_ui64
 from math import ceildiv, atan2
 from gpu.host import DeviceContext, HostBuffer, DeviceBuffer
 from layout import Layout, LayoutTensor
-from sys import has_accelerator
+from sys import has_accelerator  # Used by has_gpu()
 
 from kernels_newton import newton_kernel, colorize_kernel
 from kernels_2d import mandelbrot_kernel, julia_kernel, burning_ship_kernel, tricorn_kernel
@@ -41,9 +41,6 @@ fn render_newton(py_args: PythonObject) raises -> PythonObject:
     var zoom = Float64(py=py_args[11])
 
     var num_coeffs = len(py_coeffs)
-
-    if not has_accelerator():
-        raise Error("No GPU found")
 
     var ctx = DeviceContext()
 
@@ -202,9 +199,6 @@ fn render_mandelbrot(py_args: PythonObject) raises -> PythonObject:
     var imax = Int(py=py_args[6])
     var color_seed = Float64(py=py_args[7])
 
-    if not has_accelerator():
-        raise Error("No GPU found")
-
     var ctx = DeviceContext()
     var rgb_size = width * height * 3
 
@@ -254,9 +248,6 @@ fn render_julia(py_args: PythonObject) raises -> PythonObject:
     var imax = Int(py=py_args[10])
     var color_seed = Float64(py=py_args[11])
 
-    if not has_accelerator():
-        raise Error("No GPU found")
-
     var ctx = DeviceContext()
     var rgb_size = width * height * 3
 
@@ -303,9 +294,6 @@ fn render_burning_ship(py_args: PythonObject) raises -> PythonObject:
     var imax = Int(py=py_args[6])
     var color_seed = Float64(py=py_args[7])
 
-    if not has_accelerator():
-        raise Error("No GPU found")
-
     var ctx = DeviceContext()
     var rgb_size = width * height * 3
 
@@ -350,9 +338,6 @@ fn render_tricorn(py_args: PythonObject) raises -> PythonObject:
     var bottom = Float64(py=py_args[5])
     var imax = Int(py=py_args[6])
     var color_seed = Float64(py=py_args[7])
-
-    if not has_accelerator():
-        raise Error("No GPU found")
 
     var ctx = DeviceContext()
     var rgb_size = width * height * 3
@@ -400,9 +385,6 @@ fn render_mandelbulb(py_args: PythonObject) raises -> PythonObject:
     var power = Float32(py=py_args[7])
     var imax = Int(py=py_args[8])
     var color_seed = Float32(py=py_args[9])
-
-    if not has_accelerator():
-        raise Error("No GPU found")
 
     var ctx = DeviceContext()
     var rgb_size = width * height * 3
