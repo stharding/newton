@@ -32,6 +32,19 @@ pixi run ./newton --help                     # Show CLI options
 pixi run ./newton --coefficients "1,0,0,-1" --width 500 --height 500
 ```
 
+### Interactive Viewer (Mojo GPU)
+```bash
+cd mojo/src
+pixi run python viewer.py   # Launch interactive fractal viewer
+```
+
+**Building newton_renderer.mojo:** This module is compiled automatically on first import via Mojo's Python interop (`mojo.importer`). The compiled `.so` is cached in `__mojocache__/`. To force recompilation after editing:
+```bash
+cd mojo/src
+rm -rf __mojocache__
+pixi run python viewer.py   # Recompiles on import
+```
+
 ## Architecture
 
 **Core Algorithm**: Newton-Raphson iteration `x_next = x - f(x)/f'(x)` applied to each pixel mapped from complex plane via affine transformation.

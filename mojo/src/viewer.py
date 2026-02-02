@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Fractal interactive viewer - Python frontend with Mojo GPU backend."""
 
+import gc
+import math
 import os
 import sys
 import time
@@ -22,6 +24,10 @@ MANDELBROT = "mandelbrot"
 JULIA = "julia"
 BURNING_SHIP = "burning_ship"
 TRICORN = "tricorn"
+MANDELBULB = "mandelbulb"
+
+# 3D fractals use different control scheme
+FRACTALS_3D = {MANDELBULB}
 
 # Preset Julia constants (interesting values)
 JULIA_PRESETS = [
@@ -55,7 +61,23 @@ def main():
         JULIA: {"center": (0.0, 0.0), "zoom": 1.5},
         BURNING_SHIP: {"center": (-0.4, -0.5), "zoom": 1.5},
         TRICORN: {"center": (-0.3, 0.0), "zoom": 1.5},
+        MANDELBULB: {
+            "cam_pos": (0.0, 0.0, -2.5),
+            "cam_yaw": 0.0,
+            "cam_pitch": 0.0,
+        },
     }
+
+    # 3D camera state (for Mandelbulb and future 3D fractals)
+    cam_pos = [0.0, 0.0, -2.5]  # x, y, z
+    cam_yaw = 0.0    # Radians, left/right
+    cam_pitch = 0.0  # Radians, up/down (clamped to ±π/2)
+    move_speed = 0.05
+    look_speed = 0.003
+    mandelbulb_power = 8.0  # Classic Mandelbulb power
+
+    # Newton-specific settings
+    glow_intensity = 1.0  # 0.0 = no glow, 1.0 = full glow
 
     # Parse command line args
     if len(sys.argv) > 1:
@@ -66,6 +88,8 @@ def main():
             fractal_type = JULIA
         elif arg == "newton":
             fractal_type = NEWTON
+        elif arg == "mandelbulb":
+            fractal_type = MANDELBULB
         else:
             coefficients = [float(c) for c in arg.split(",")]
 
@@ -78,6 +102,7 @@ def main():
 
     # Initialize pygame
     pygame.init()
+    pygame.key.set_repeat(150, 25)  # Enable key repeat (not used, but available)
     screen = pygame.display.set_mode((width, height), pygame.RESIZABLE)
     pygame.display.set_caption("Newton Fractal")
     clock = pygame.time.Clock()
@@ -90,6 +115,8 @@ def main():
     # Control speeds
     pan_speed = 0.02
     zoom_factor = 1.1
+    key_repeat_interval = 0.1  # seconds between repeats when holding keys
+    last_key_repeat_time = 0.0
 
     running = True
     needs_render = True
@@ -110,10 +137,18 @@ def main():
     help_lines = [
         "Keybindings:",
         "",
-        "Navigation:",
+        "2D Navigation:",
         "  Drag           Pan",
         "  Scroll         Zoom (at cursor)",
         "  Arrows         Pan",
+        "",
+        "3D Navigation (Mandelbulb):",
+        "  Up/Down        Move forward/back",
+        "  Left/Right     Strafe left/right",
+        "  Space/Ctrl     Move up/down",
+        "  Drag           Look around",
+        "  Shift+drag     Pan (no rotation)",
+        "  Scroll         Move forward/back",
         "",
         "Fractal type:",
         "  N              Newton fractal",
@@ -121,8 +156,9 @@ def main():
         "  J              Julia set",
         "  B              Burning Ship",
         "  T              Tricorn (Mandelbar)",
-        "  [ / ]          Cycle Julia presets",
-        "  D              Reset Julia defaults",
+        "  P              Mandelbulb (3D)",
+        "  [ / ]          Cycle presets/power",
+        "  D              Reset defaults",
         "",
         "Modifiers:",
         "  Shift+drag     Adjust Julia c",
@@ -132,6 +168,7 @@ def main():
         "Parameters:",
         "  2-9            Newton: z^n - 1",
         "  + / -          Max iterations (shift=10x)",
+        "  G / Shift+G    Glow intensity +/- (Newton)",
         "  R              Randomize colors",
         "",
         "Display:",
@@ -145,6 +182,8 @@ def main():
     dragging = False
     drag_start_pos = None
     drag_start_center = None
+    drag_start_yaw = None
+    drag_start_pitch = None
 
     while running:
         # Event handling (native Python - fast!)
@@ -170,8 +209,13 @@ def main():
                     needs_render = True
                 elif event.key == pygame.K_0:
                     # Reset view
-                    center_re, center_im = 0.0, 0.0
-                    zoom = 1.0
+                    if fractal_type in FRACTALS_3D:
+                        cam_pos = [0.0, 0.0, -2.5]
+                        cam_yaw = 0.0
+                        cam_pitch = 0.0
+                    else:
+                        center_re, center_im = 0.0, 0.0
+                        zoom = 1.0
                     needs_render = True
                 elif event.key in (
                     pygame.K_2,
@@ -188,21 +232,16 @@ def main():
                     coefficients = [1.0] + [0.0] * (n - 1) + [-1.0]
                     print(f"Polynomial: z^{n} - 1")
                     needs_render = True
-                elif event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
-                    # Increase max iterations (shift for 10x)
-                    delta = 100 if event.mod & pygame.KMOD_SHIFT else 10
-                    imax += delta
-                    print(f"Max iterations: {imax}")
-                    needs_render = True
-                elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
-                    # Decrease max iterations (shift for 10x)
-                    delta = 100 if event.mod & pygame.KMOD_SHIFT else 10
-                    imax = max(imax - delta, 10)
-                    print(f"Max iterations: {imax}")
-                    needs_render = True
                 elif event.key == pygame.K_n:
                     # Save current view, switch to Newton
-                    saved_views[fractal_type] = {"center": (center_re, center_im), "zoom": zoom}
+                    if fractal_type in FRACTALS_3D:
+                        saved_views[fractal_type] = {
+                            "cam_pos": tuple(cam_pos),
+                            "cam_yaw": cam_yaw,
+                            "cam_pitch": cam_pitch,
+                        }
+                    else:
+                        saved_views[fractal_type] = {"center": (center_re, center_im), "zoom": zoom}
                     fractal_type = NEWTON
                     center_re, center_im = saved_views[NEWTON]["center"]
                     zoom = saved_views[NEWTON]["zoom"]
@@ -210,7 +249,14 @@ def main():
                     needs_render = True
                 elif event.key == pygame.K_m:
                     # Save current view, switch to Mandelbrot
-                    saved_views[fractal_type] = {"center": (center_re, center_im), "zoom": zoom}
+                    if fractal_type in FRACTALS_3D:
+                        saved_views[fractal_type] = {
+                            "cam_pos": tuple(cam_pos),
+                            "cam_yaw": cam_yaw,
+                            "cam_pitch": cam_pitch,
+                        }
+                    else:
+                        saved_views[fractal_type] = {"center": (center_re, center_im), "zoom": zoom}
                     fractal_type = MANDELBROT
                     center_re, center_im = saved_views[MANDELBROT]["center"]
                     zoom = saved_views[MANDELBROT]["zoom"]
@@ -218,7 +264,14 @@ def main():
                     needs_render = True
                 elif event.key == pygame.K_j:
                     # Save current view, switch to Julia
-                    saved_views[fractal_type] = {"center": (center_re, center_im), "zoom": zoom}
+                    if fractal_type in FRACTALS_3D:
+                        saved_views[fractal_type] = {
+                            "cam_pos": tuple(cam_pos),
+                            "cam_yaw": cam_yaw,
+                            "cam_pitch": cam_pitch,
+                        }
+                    else:
+                        saved_views[fractal_type] = {"center": (center_re, center_im), "zoom": zoom}
                     fractal_type = JULIA
                     center_re, center_im = saved_views[JULIA]["center"]
                     zoom = saved_views[JULIA]["zoom"]
@@ -226,7 +279,14 @@ def main():
                     needs_render = True
                 elif event.key == pygame.K_b:
                     # Save current view, switch to Burning Ship
-                    saved_views[fractal_type] = {"center": (center_re, center_im), "zoom": zoom}
+                    if fractal_type in FRACTALS_3D:
+                        saved_views[fractal_type] = {
+                            "cam_pos": tuple(cam_pos),
+                            "cam_yaw": cam_yaw,
+                            "cam_pitch": cam_pitch,
+                        }
+                    else:
+                        saved_views[fractal_type] = {"center": (center_re, center_im), "zoom": zoom}
                     fractal_type = BURNING_SHIP
                     center_re, center_im = saved_views[BURNING_SHIP]["center"]
                     zoom = saved_views[BURNING_SHIP]["zoom"]
@@ -234,33 +294,74 @@ def main():
                     needs_render = True
                 elif event.key == pygame.K_t:
                     # Save current view, switch to Tricorn
-                    saved_views[fractal_type] = {"center": (center_re, center_im), "zoom": zoom}
+                    if fractal_type in FRACTALS_3D:
+                        saved_views[fractal_type] = {
+                            "cam_pos": tuple(cam_pos),
+                            "cam_yaw": cam_yaw,
+                            "cam_pitch": cam_pitch,
+                        }
+                    else:
+                        saved_views[fractal_type] = {"center": (center_re, center_im), "zoom": zoom}
                     fractal_type = TRICORN
                     center_re, center_im = saved_views[TRICORN]["center"]
                     zoom = saved_views[TRICORN]["zoom"]
                     print("Fractal: Tricorn")
                     needs_render = True
+                elif event.key == pygame.K_p:
+                    # Save current view, switch to Mandelbulb
+                    if fractal_type in FRACTALS_3D:
+                        saved_views[fractal_type] = {
+                            "cam_pos": tuple(cam_pos),
+                            "cam_yaw": cam_yaw,
+                            "cam_pitch": cam_pitch,
+                        }
+                    else:
+                        saved_views[fractal_type] = {"center": (center_re, center_im), "zoom": zoom}
+                    fractal_type = MANDELBULB
+                    cam_pos = list(saved_views[MANDELBULB]["cam_pos"])
+                    cam_yaw = saved_views[MANDELBULB]["cam_yaw"]
+                    cam_pitch = saved_views[MANDELBULB]["cam_pitch"]
+                    print(f"Fractal: Mandelbulb (power={mandelbulb_power})")
+                    needs_render = True
                 elif event.key == pygame.K_RIGHTBRACKET:
-                    # Next Julia preset
-                    julia_preset_idx = (julia_preset_idx + 1) % len(JULIA_PRESETS)
-                    julia_c = JULIA_PRESETS[julia_preset_idx]
-                    print(f"Julia preset {julia_preset_idx + 1}: c = {julia_c[0]:.3f} + {julia_c[1]:.3f}i")
+                    if fractal_type == MANDELBULB:
+                        # Increase Mandelbulb power
+                        mandelbulb_power = min(mandelbulb_power + 0.5, 16.0)
+                        print(f"Mandelbulb power: {mandelbulb_power}")
+                    else:
+                        # Next Julia preset
+                        julia_preset_idx = (julia_preset_idx + 1) % len(JULIA_PRESETS)
+                        julia_c = JULIA_PRESETS[julia_preset_idx]
+                        print(f"Julia preset {julia_preset_idx + 1}: c = {julia_c[0]:.3f} + {julia_c[1]:.3f}i")
                     needs_render = True
                 elif event.key == pygame.K_LEFTBRACKET:
-                    # Previous Julia preset
-                    julia_preset_idx = (julia_preset_idx - 1) % len(JULIA_PRESETS)
-                    julia_c = JULIA_PRESETS[julia_preset_idx]
-                    print(f"Julia preset {julia_preset_idx + 1}: c = {julia_c[0]:.3f} + {julia_c[1]:.3f}i")
+                    if fractal_type == MANDELBULB:
+                        # Decrease Mandelbulb power
+                        mandelbulb_power = max(mandelbulb_power - 0.5, 2.0)
+                        print(f"Mandelbulb power: {mandelbulb_power}")
+                    else:
+                        # Previous Julia preset
+                        julia_preset_idx = (julia_preset_idx - 1) % len(JULIA_PRESETS)
+                        julia_c = JULIA_PRESETS[julia_preset_idx]
+                        print(f"Julia preset {julia_preset_idx + 1}: c = {julia_c[0]:.3f} + {julia_c[1]:.3f}i")
                     needs_render = True
                 elif event.key == pygame.K_d:
-                    # Reset Julia to defaults
-                    julia_preset_idx = 0
-                    julia_c = JULIA_PRESETS[julia_preset_idx]
-                    julia_power = (2.0, 0.0)
-                    if fractal_type == JULIA:
-                        center_re, center_im = 0.0, 0.0
-                        zoom = 1.5
-                    print("Julia reset to defaults")
+                    if fractal_type == MANDELBULB:
+                        # Reset Mandelbulb to defaults
+                        cam_pos = [0.0, 0.0, -2.5]
+                        cam_yaw = 0.0
+                        cam_pitch = 0.0
+                        mandelbulb_power = 8.0
+                        print("Mandelbulb reset to defaults")
+                    else:
+                        # Reset Julia to defaults
+                        julia_preset_idx = 0
+                        julia_c = JULIA_PRESETS[julia_preset_idx]
+                        julia_power = (2.0, 0.0)
+                        if fractal_type == JULIA:
+                            center_re, center_im = 0.0, 0.0
+                            zoom = 1.5
+                        print("Julia reset to defaults")
                     needs_render = True
             elif event.type in (pygame.VIDEORESIZE, pygame.WINDOWRESIZED):
                 needs_render = True
@@ -285,9 +386,11 @@ def main():
                     else:
                         dragging = True
                         drag_start_pos = event.pos
-                        drag_start_center = (center_re, center_im)
+                        drag_start_center = tuple(cam_pos) if fractal_type in FRACTALS_3D else (center_re, center_im)
                         drag_start_julia_c = julia_c
                         drag_start_power = julia_power
+                        drag_start_yaw = cam_yaw
+                        drag_start_pitch = cam_pitch
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1:
                     dragging = False
@@ -297,7 +400,36 @@ def main():
                     dy = event.pos[1] - drag_start_pos[1]
                     mods = pygame.key.get_mods()
 
-                    if mods & pygame.KMOD_SHIFT:
+                    if fractal_type in FRACTALS_3D:
+                        if mods & pygame.KMOD_SHIFT:
+                            # Shift+drag: move camera perpendicular to view direction
+                            cos_yaw = math.cos(cam_yaw)
+                            sin_yaw = math.sin(cam_yaw)
+                            cos_pitch = math.cos(cam_pitch)
+                            sin_pitch = math.sin(cam_pitch)
+
+                            # Right direction (perpendicular to forward, in XZ plane)
+                            right_x = cos_yaw
+                            right_z = -sin_yaw
+
+                            # Up direction (cross product of right and forward)
+                            up_x = -sin_pitch * sin_yaw
+                            up_y = cos_pitch
+                            up_z = -sin_pitch * cos_yaw
+
+                            # Move based on drag delta
+                            move_scale = 0.005
+                            cam_pos[0] = drag_start_center[0] - dx * right_x * move_scale + dy * up_x * move_scale
+                            cam_pos[1] = drag_start_center[1] + dy * up_y * move_scale
+                            cam_pos[2] = drag_start_center[2] - dx * right_z * move_scale + dy * up_z * move_scale
+                        else:
+                            # Normal drag: rotate camera
+                            cam_yaw = drag_start_yaw + dx * look_speed
+                            cam_pitch = drag_start_pitch - dy * look_speed
+                            # Clamp pitch to avoid gimbal lock
+                            cam_pitch = max(-math.pi / 2 + 0.01, min(math.pi / 2 - 0.01, cam_pitch))
+                        needs_render = True
+                    elif mods & pygame.KMOD_SHIFT:
                         # Shift+drag: modify Julia c parameter
                         julia_c = (
                             drag_start_julia_c[0] + dx * 0.005,
@@ -329,44 +461,127 @@ def main():
                         center_im = drag_start_center[1] + dy * im_per_pixel
                         needs_render = True
             elif event.type == pygame.MOUSEWHEEL:
-                # Zoom with scroll wheel (zoom towards mouse position)
-                mouse_x, mouse_y = pygame.mouse.get_pos()
-                # Convert mouse to complex coordinates before zoom
-                half_w = zoom * aspect
-                half_h = zoom
-                mouse_re = center_re + (mouse_x / width - 0.5) * 2 * half_w
-                mouse_im = center_im - (mouse_y / height - 0.5) * 2 * half_h
-
-                if event.y > 0:
-                    zoom /= zoom_factor
+                if fractal_type in FRACTALS_3D:
+                    # 3D mode: scroll moves forward/backward
+                    cos_yaw = math.cos(cam_yaw)
+                    sin_yaw = math.sin(cam_yaw)
+                    cos_pitch = math.cos(cam_pitch)
+                    sin_pitch = math.sin(cam_pitch)
+                    # Forward direction
+                    fwd_x = cos_pitch * sin_yaw
+                    fwd_y = sin_pitch
+                    fwd_z = cos_pitch * cos_yaw
+                    move_amount = move_speed * 3 * event.y
+                    cam_pos[0] += fwd_x * move_amount
+                    cam_pos[1] += fwd_y * move_amount
+                    cam_pos[2] += fwd_z * move_amount
+                    needs_render = True
                 else:
-                    zoom *= zoom_factor
+                    # 2D mode: Zoom with scroll wheel (zoom towards mouse position)
+                    mouse_x, mouse_y = pygame.mouse.get_pos()
+                    # Convert mouse to complex coordinates before zoom
+                    half_w = zoom * aspect
+                    half_h = zoom
+                    mouse_re = center_re + (mouse_x / width - 0.5) * 2 * half_w
+                    mouse_im = center_im - (mouse_y / height - 0.5) * 2 * half_h
 
-                # Adjust center to keep mouse point fixed
-                half_w = zoom * aspect
-                half_h = zoom
-                new_mouse_re = center_re + (mouse_x / width - 0.5) * 2 * half_w
-                new_mouse_im = center_im - (mouse_y / height - 0.5) * 2 * half_h
-                center_re += mouse_re - new_mouse_re
-                center_im += mouse_im - new_mouse_im
+                    if event.y > 0:
+                        zoom /= zoom_factor
+                    else:
+                        zoom *= zoom_factor
 
-                needs_render = True
+                    # Adjust center to keep mouse point fixed
+                    half_w = zoom * aspect
+                    half_h = zoom
+                    new_mouse_re = center_re + (mouse_x / width - 0.5) * 2 * half_w
+                    new_mouse_im = center_im - (mouse_y / height - 0.5) * 2 * half_h
+                    center_re += mouse_re - new_mouse_re
+                    center_im += mouse_im - new_mouse_im
 
-        # Continuous key input for smooth panning/zooming
+                    needs_render = True
+
+        # Continuous key input for smooth panning/movement
         keys = pygame.key.get_pressed()
 
-        if keys[pygame.K_UP]:
-            center_im += pan_speed * zoom
-            needs_render = True
-        if keys[pygame.K_DOWN]:
-            center_im -= pan_speed * zoom
-            needs_render = True
-        if keys[pygame.K_LEFT]:
-            center_re -= pan_speed * zoom
-            needs_render = True
-        if keys[pygame.K_RIGHT]:
-            center_re += pan_speed * zoom
-            needs_render = True
+        if fractal_type in FRACTALS_3D:
+            # 3D movement with arrow keys
+            cos_yaw = math.cos(cam_yaw)
+            sin_yaw = math.sin(cam_yaw)
+            cos_pitch = math.cos(cam_pitch)
+            sin_pitch = math.sin(cam_pitch)
+
+            # Forward direction (where camera is looking)
+            fwd_x = cos_pitch * sin_yaw
+            fwd_y = sin_pitch
+            fwd_z = cos_pitch * cos_yaw
+
+            # Right direction (perpendicular to forward, in XZ plane)
+            right_x = cos_yaw
+            right_z = -sin_yaw
+
+            if keys[pygame.K_UP]:
+                cam_pos[0] += fwd_x * move_speed
+                cam_pos[1] += fwd_y * move_speed
+                cam_pos[2] += fwd_z * move_speed
+                needs_render = True
+            if keys[pygame.K_DOWN]:
+                cam_pos[0] -= fwd_x * move_speed
+                cam_pos[1] -= fwd_y * move_speed
+                cam_pos[2] -= fwd_z * move_speed
+                needs_render = True
+            if keys[pygame.K_LEFT]:
+                cam_pos[0] -= right_x * move_speed
+                cam_pos[2] -= right_z * move_speed
+                needs_render = True
+            if keys[pygame.K_RIGHT]:
+                cam_pos[0] += right_x * move_speed
+                cam_pos[2] += right_z * move_speed
+                needs_render = True
+            if keys[pygame.K_SPACE]:
+                cam_pos[1] += move_speed
+                needs_render = True
+            if keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL]:
+                cam_pos[1] -= move_speed
+                needs_render = True
+        else:
+            # 2D panning with arrow keys
+            if keys[pygame.K_UP]:
+                center_im += pan_speed * zoom
+                needs_render = True
+            if keys[pygame.K_DOWN]:
+                center_im -= pan_speed * zoom
+                needs_render = True
+            if keys[pygame.K_LEFT]:
+                center_re -= pan_speed * zoom
+                needs_render = True
+            if keys[pygame.K_RIGHT]:
+                center_re += pan_speed * zoom
+                needs_render = True
+
+        # Continuous adjustment keys (work while held, rate limited)
+        current_time = time.perf_counter()
+        if current_time - last_key_repeat_time > key_repeat_interval:
+            mods = pygame.key.get_mods()
+            key_acted = False
+            if keys[pygame.K_g]:
+                if mods & pygame.KMOD_SHIFT:
+                    glow_intensity = max(0.0, glow_intensity - 0.1)
+                else:
+                    glow_intensity += 0.1
+                needs_render = True
+                key_acted = True
+            if keys[pygame.K_EQUALS] or keys[pygame.K_KP_PLUS]:
+                delta = 100 if mods & pygame.KMOD_SHIFT else 10
+                imax += delta
+                needs_render = True
+                key_acted = True
+            if keys[pygame.K_MINUS] or keys[pygame.K_KP_MINUS]:
+                delta = 100 if mods & pygame.KMOD_SHIFT else 10
+                imax = max(imax - delta, 10)
+                needs_render = True
+                key_acted = True
+            if key_acted:
+                last_key_repeat_time = current_time
 
         # Render if needed
         if needs_render:
@@ -399,6 +614,8 @@ def main():
                         tolerance,
                         imax,
                         color_seed,
+                        glow_intensity,
+                        zoom,
                     )
                 )
             elif fractal_type == MANDELBROT:
@@ -457,6 +674,21 @@ def main():
                         color_seed,
                     )
                 )
+            elif fractal_type == MANDELBULB:
+                rgb_array = newton_renderer.render_mandelbulb(
+                    (
+                        width,
+                        height,
+                        cam_pos[0],
+                        cam_pos[1],
+                        cam_pos[2],
+                        cam_yaw,
+                        cam_pitch,
+                        mandelbulb_power,
+                        imax,
+                        color_seed,
+                    )
+                )
 
             t1 = time.perf_counter()
             render_ms = (t1 - t0) * 1000
@@ -478,6 +710,10 @@ def main():
                     else:
                         power_str = f"z^({julia_power[0]:.2f}{julia_power[1]:+.2f}i)"
                     fps_text = f"{fractal_type} c={julia_c[0]:.3f}{julia_c[1]:+.3f}i {power_str} | {last_render_ms:.1f}ms | {last_fps:.0f} FPS"
+                elif fractal_type == MANDELBULB:
+                    fps_text = f"{fractal_type} power={mandelbulb_power:.1f} | {last_render_ms:.1f}ms | {last_fps:.0f} FPS | imax: {imax}"
+                elif fractal_type == NEWTON:
+                    fps_text = f"{fractal_type} | {last_render_ms:.1f}ms | {last_fps:.0f} FPS | zoom: {zoom:.2f} | glow: {glow_intensity:.1f} | imax: {imax}"
                 else:
                     fps_text = f"{fractal_type} | {last_render_ms:.1f}ms | {last_fps:.0f} FPS | zoom: {zoom:.2e} | imax: {imax}"
                 fps_surface = font.render(fps_text, True, (255, 255, 255), (0, 0, 0))
@@ -507,6 +743,9 @@ def main():
 
             frame_times.append(total_ms)
             needs_render = False
+
+            # Help free GPU memory
+            gc.collect()
 
         # Cap at 60 FPS when idle
         clock.tick(60)
