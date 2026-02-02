@@ -7,6 +7,55 @@ from gpu_math import gpu_sin, gpu_cos, gpu_log2, gpu_sqrt, gpu_atan2, gpu_exp2
 
 
 # ============================================================================
+# Shared smooth coloring (cosine gradient palette)
+# ============================================================================
+
+@always_inline
+fn write_smooth_color[
+    layout: Layout
+](
+    output: LayoutTensor[DType.uint8, layout, MutAnyOrigin],
+    pixel_idx: Int,
+    iterations: Int,
+    imax: Int,
+    final_r2: Float64,
+    color_seed: Float64,
+):
+    """Apply smooth coloring based on escape iteration count."""
+    if iterations == imax:
+        output[pixel_idx] = 0
+        output[pixel_idx + 1] = 0
+        output[pixel_idx + 2] = 0
+    else:
+        var log_zn = Float32(0.5) * gpu_log2(Float32(final_r2))
+        var smooth_iter = Float32(iterations) + Float32(1.0) - gpu_log2(log_zn)
+
+        var t = smooth_iter * Float32(0.05) + Float32(color_seed)
+        t = t - Float32(Int(t))
+
+        var pi2 = Float32(6.28318530)
+        var r = Float32(0.45) + Float32(0.35) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.0)))
+        var g = Float32(0.40) + Float32(0.30) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.15)))
+        var b = Float32(0.55) + Float32(0.35) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.35)))
+
+        var gray = (r + g + b) / Float32(3.0)
+        r = gray + (r - gray) * Float32(1.1)
+        g = gray + (g - gray) * Float32(1.1)
+        b = gray + (b - gray) * Float32(1.1)
+
+        if r < Float32(0.0): r = Float32(0.0)
+        if r > Float32(1.0): r = Float32(1.0)
+        if g < Float32(0.0): g = Float32(0.0)
+        if g > Float32(1.0): g = Float32(1.0)
+        if b < Float32(0.0): b = Float32(0.0)
+        if b > Float32(1.0): b = Float32(1.0)
+
+        output[pixel_idx] = UInt8(r * Float32(255.0))
+        output[pixel_idx + 1] = UInt8(g * Float32(255.0))
+        output[pixel_idx + 2] = UInt8(b * Float32(255.0))
+
+
+# ============================================================================
 # Mandelbrot kernel: z = z² + c, c = pixel coordinate
 # ============================================================================
 
@@ -50,38 +99,7 @@ fn mandelbrot_kernel[
         z_re = new_re
 
     var pixel_idx = (py * width + px) * 3
-    if iterations == imax:
-        output[pixel_idx] = 0
-        output[pixel_idx + 1] = 0
-        output[pixel_idx + 2] = 0
-    else:
-        var mag_sq = z_re2 + z_im2
-        var log_zn = 0.5 * gpu_log2(Float32(mag_sq))
-        var smooth_iter = Float32(iterations) + Float32(1.0) - gpu_log2(log_zn)
-
-        var t = smooth_iter * Float32(0.05) + Float32(color_seed)
-        t = t - Float32(Int(t))
-
-        var pi2 = Float32(6.28318530)
-        var r = Float32(0.45) + Float32(0.35) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.0)))
-        var g = Float32(0.40) + Float32(0.30) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.15)))
-        var b = Float32(0.55) + Float32(0.35) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.35)))
-
-        var gray = (r + g + b) / Float32(3.0)
-        r = gray + (r - gray) * Float32(1.1)
-        g = gray + (g - gray) * Float32(1.1)
-        b = gray + (b - gray) * Float32(1.1)
-
-        if r < Float32(0.0): r = Float32(0.0)
-        if r > Float32(1.0): r = Float32(1.0)
-        if g < Float32(0.0): g = Float32(0.0)
-        if g > Float32(1.0): g = Float32(1.0)
-        if b < Float32(0.0): b = Float32(0.0)
-        if b > Float32(1.0): b = Float32(1.0)
-
-        output[pixel_idx] = UInt8(r * Float32(255.0))
-        output[pixel_idx + 1] = UInt8(g * Float32(255.0))
-        output[pixel_idx + 2] = UInt8(b * Float32(255.0))
+    write_smooth_color[output_layout](output, pixel_idx, iterations, imax, z_re2 + z_im2, color_seed)
 
 
 # ============================================================================
@@ -152,37 +170,7 @@ fn julia_kernel[
                 z_im = Float64(mag * gpu_sin(angle)) + c_im
 
     var pixel_idx = (py * width + px) * 3
-    if iterations == imax:
-        output[pixel_idx] = 0
-        output[pixel_idx + 1] = 0
-        output[pixel_idx + 2] = 0
-    else:
-        var log_zn = Float32(0.5) * gpu_log2(Float32(final_r2))
-        var smooth_iter = Float32(iterations) + Float32(1.0) - gpu_log2(log_zn)
-
-        var t = smooth_iter * Float32(0.05) + Float32(color_seed)
-        t = t - Float32(Int(t))
-
-        var pi2 = Float32(6.28318530)
-        var r = Float32(0.45) + Float32(0.35) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.0)))
-        var g = Float32(0.40) + Float32(0.30) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.15)))
-        var b = Float32(0.55) + Float32(0.35) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.35)))
-
-        var gray = (r + g + b) / Float32(3.0)
-        r = gray + (r - gray) * Float32(1.1)
-        g = gray + (g - gray) * Float32(1.1)
-        b = gray + (b - gray) * Float32(1.1)
-
-        if r < Float32(0.0): r = Float32(0.0)
-        if r > Float32(1.0): r = Float32(1.0)
-        if g < Float32(0.0): g = Float32(0.0)
-        if g > Float32(1.0): g = Float32(1.0)
-        if b < Float32(0.0): b = Float32(0.0)
-        if b > Float32(1.0): b = Float32(1.0)
-
-        output[pixel_idx] = UInt8(r * 255)
-        output[pixel_idx + 1] = UInt8(g * 255)
-        output[pixel_idx + 2] = UInt8(b * 255)
+    write_smooth_color[output_layout](output, pixel_idx, iterations, imax, final_r2, color_seed)
 
 
 # ============================================================================
@@ -231,37 +219,7 @@ fn burning_ship_kernel[
         z_re = new_re
 
     var pixel_idx = (py * width + px) * 3
-    if iterations == imax:
-        output[pixel_idx] = 0
-        output[pixel_idx + 1] = 0
-        output[pixel_idx + 2] = 0
-    else:
-        var log_zn = Float32(0.5) * gpu_log2(Float32(final_r2))
-        var smooth_iter = Float32(iterations) + Float32(1.0) - gpu_log2(log_zn)
-
-        var t = smooth_iter * Float32(0.05) + Float32(color_seed)
-        t = t - Float32(Int(t))
-
-        var pi2 = Float32(6.28318530)
-        var r = Float32(0.45) + Float32(0.35) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.0)))
-        var g = Float32(0.40) + Float32(0.30) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.15)))
-        var b = Float32(0.55) + Float32(0.35) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.35)))
-
-        var gray = (r + g + b) / Float32(3.0)
-        r = gray + (r - gray) * Float32(1.1)
-        g = gray + (g - gray) * Float32(1.1)
-        b = gray + (b - gray) * Float32(1.1)
-
-        if r < Float32(0.0): r = Float32(0.0)
-        if r > Float32(1.0): r = Float32(1.0)
-        if g < Float32(0.0): g = Float32(0.0)
-        if g > Float32(1.0): g = Float32(1.0)
-        if b < Float32(0.0): b = Float32(0.0)
-        if b > Float32(1.0): b = Float32(1.0)
-
-        output[pixel_idx] = UInt8(r * Float32(255.0))
-        output[pixel_idx + 1] = UInt8(g * Float32(255.0))
-        output[pixel_idx + 2] = UInt8(b * Float32(255.0))
+    write_smooth_color[output_layout](output, pixel_idx, iterations, imax, final_r2, color_seed)
 
 
 # ============================================================================
@@ -308,34 +266,4 @@ fn tricorn_kernel[
         z_re = new_re
 
     var pixel_idx = (py * width + px) * 3
-    if iterations == imax:
-        output[pixel_idx] = 0
-        output[pixel_idx + 1] = 0
-        output[pixel_idx + 2] = 0
-    else:
-        var log_zn = Float32(0.5) * gpu_log2(Float32(final_r2))
-        var smooth_iter = Float32(iterations) + Float32(1.0) - gpu_log2(log_zn)
-
-        var t = smooth_iter * Float32(0.05) + Float32(color_seed)
-        t = t - Float32(Int(t))
-
-        var pi2 = Float32(6.28318530)
-        var r = Float32(0.45) + Float32(0.35) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.0)))
-        var g = Float32(0.40) + Float32(0.30) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.15)))
-        var b = Float32(0.55) + Float32(0.35) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.35)))
-
-        var gray = (r + g + b) / Float32(3.0)
-        r = gray + (r - gray) * Float32(1.1)
-        g = gray + (g - gray) * Float32(1.1)
-        b = gray + (b - gray) * Float32(1.1)
-
-        if r < Float32(0.0): r = Float32(0.0)
-        if r > Float32(1.0): r = Float32(1.0)
-        if g < Float32(0.0): g = Float32(0.0)
-        if g > Float32(1.0): g = Float32(1.0)
-        if b < Float32(0.0): b = Float32(0.0)
-        if b > Float32(1.0): b = Float32(1.0)
-
-        output[pixel_idx] = UInt8(r * Float32(255.0))
-        output[pixel_idx + 1] = UInt8(g * Float32(255.0))
-        output[pixel_idx + 2] = UInt8(b * Float32(255.0))
+    write_smooth_color[output_layout](output, pixel_idx, iterations, imax, final_r2, color_seed)
