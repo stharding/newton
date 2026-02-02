@@ -13,6 +13,9 @@ from kernels_newton import newton_kernel, colorize_kernel
 from kernels_2d import mandelbrot_kernel, julia_kernel, burning_ship_kernel, tricorn_kernel
 from kernels_3d import mandelbulb_kernel
 
+# Single layout for all buffers - the size parameter is unused for 1D row-major
+comptime L = Layout.row_major(1)
+
 
 # ============================================================================
 # Python-exposed render functions
@@ -64,21 +67,16 @@ fn render_newton(py_args: PythonObject) raises -> PythonObject:
     ctx.enqueue_copy(coeffs_device, coeffs_host)
     ctx.synchronize()
 
-    comptime coeffs_layout = Layout.row_major(16)
-    comptime newton_layout = Layout.row_major(1920 * 1080 * 3)
-    comptime roots_layout = Layout.row_major(16 * 5)
-    comptime rgb_layout = Layout.row_major(1920 * 1080 * 3)
-
-    var coeffs_tensor = LayoutTensor[DType.float64, coeffs_layout](coeffs_device)
-    var newton_tensor = LayoutTensor[DType.float64, newton_layout](newton_device)
+    var coeffs_tensor = LayoutTensor[DType.float64, L](coeffs_device)
+    var newton_tensor = LayoutTensor[DType.float64, L](newton_device)
 
     comptime block_size = 16
     var grid_x = ceildiv(width, block_size)
     var grid_y = ceildiv(height, block_size)
 
     ctx.enqueue_function[
-        newton_kernel[coeffs_layout, newton_layout],
-        newton_kernel[coeffs_layout, newton_layout],
+        newton_kernel[L, L],
+        newton_kernel[L, L],
     ](
         coeffs_tensor, num_coeffs, newton_tensor,
         width, height, left, right, top, bottom, tolerance, imax,
@@ -168,12 +166,12 @@ fn render_newton(py_args: PythonObject) raises -> PythonObject:
     ctx.enqueue_copy(roots_device, roots_host)
     ctx.synchronize()
 
-    var roots_tensor = LayoutTensor[DType.float64, roots_layout](roots_device)
-    var rgb_tensor = LayoutTensor[DType.uint8, rgb_layout](rgb_device)
+    var roots_tensor = LayoutTensor[DType.float64, L](roots_device)
+    var rgb_tensor = LayoutTensor[DType.uint8, L](rgb_device)
 
     ctx.enqueue_function[
-        colorize_kernel[newton_layout, roots_layout, rgb_layout],
-        colorize_kernel[newton_layout, roots_layout, rgb_layout],
+        colorize_kernel[L, L, L],
+        colorize_kernel[L, L, L],
     ](
         newton_tensor, roots_tensor, num_roots, rgb_tensor,
         width, height, tolerance, imax, glow_intensity, zoom,
@@ -214,16 +212,15 @@ fn render_mandelbrot(py_args: PythonObject) raises -> PythonObject:
     var rgb_host = ctx.enqueue_create_host_buffer[DType.uint8](rgb_size)
     ctx.synchronize()
 
-    comptime rgb_layout = Layout.row_major(1920 * 1080 * 3)
-    var rgb_tensor = LayoutTensor[DType.uint8, rgb_layout](rgb_device)
+    var rgb_tensor = LayoutTensor[DType.uint8, L](rgb_device)
 
     comptime block_size = 16
     var grid_x = ceildiv(width, block_size)
     var grid_y = ceildiv(height, block_size)
 
     ctx.enqueue_function[
-        mandelbrot_kernel[rgb_layout],
-        mandelbrot_kernel[rgb_layout],
+        mandelbrot_kernel[L],
+        mandelbrot_kernel[L],
     ](
         rgb_tensor, width, height, left, right, top, bottom, imax, color_seed,
         grid_dim=(grid_x, grid_y),
@@ -267,16 +264,15 @@ fn render_julia(py_args: PythonObject) raises -> PythonObject:
     var rgb_host = ctx.enqueue_create_host_buffer[DType.uint8](rgb_size)
     ctx.synchronize()
 
-    comptime rgb_layout = Layout.row_major(1920 * 1080 * 3)
-    var rgb_tensor = LayoutTensor[DType.uint8, rgb_layout](rgb_device)
+    var rgb_tensor = LayoutTensor[DType.uint8, L](rgb_device)
 
     comptime block_size = 16
     var grid_x = ceildiv(width, block_size)
     var grid_y = ceildiv(height, block_size)
 
     ctx.enqueue_function[
-        julia_kernel[rgb_layout],
-        julia_kernel[rgb_layout],
+        julia_kernel[L],
+        julia_kernel[L],
     ](
         rgb_tensor, width, height, left, right, top, bottom,
         c_re, c_im, power_re, power_im, imax, color_seed,
@@ -317,16 +313,15 @@ fn render_burning_ship(py_args: PythonObject) raises -> PythonObject:
     var rgb_host = ctx.enqueue_create_host_buffer[DType.uint8](rgb_size)
     ctx.synchronize()
 
-    comptime rgb_layout = Layout.row_major(1920 * 1080 * 3)
-    var rgb_tensor = LayoutTensor[DType.uint8, rgb_layout](rgb_device)
+    var rgb_tensor = LayoutTensor[DType.uint8, L](rgb_device)
 
     comptime block_size = 16
     var grid_x = ceildiv(width, block_size)
     var grid_y = ceildiv(height, block_size)
 
     ctx.enqueue_function[
-        burning_ship_kernel[rgb_layout],
-        burning_ship_kernel[rgb_layout],
+        burning_ship_kernel[L],
+        burning_ship_kernel[L],
     ](
         rgb_tensor, width, height, left, right, top, bottom, imax, color_seed,
         grid_dim=(grid_x, grid_y),
@@ -366,16 +361,15 @@ fn render_tricorn(py_args: PythonObject) raises -> PythonObject:
     var rgb_host = ctx.enqueue_create_host_buffer[DType.uint8](rgb_size)
     ctx.synchronize()
 
-    comptime rgb_layout = Layout.row_major(1920 * 1080 * 3)
-    var rgb_tensor = LayoutTensor[DType.uint8, rgb_layout](rgb_device)
+    var rgb_tensor = LayoutTensor[DType.uint8, L](rgb_device)
 
     comptime block_size = 16
     var grid_x = ceildiv(width, block_size)
     var grid_y = ceildiv(height, block_size)
 
     ctx.enqueue_function[
-        tricorn_kernel[rgb_layout],
-        tricorn_kernel[rgb_layout],
+        tricorn_kernel[L],
+        tricorn_kernel[L],
     ](
         rgb_tensor, width, height, left, right, top, bottom, imax, color_seed,
         grid_dim=(grid_x, grid_y),
@@ -417,16 +411,15 @@ fn render_mandelbulb(py_args: PythonObject) raises -> PythonObject:
     var rgb_host = ctx.enqueue_create_host_buffer[DType.uint8](rgb_size)
     ctx.synchronize()
 
-    comptime rgb_layout = Layout.row_major(1920 * 1080 * 3)
-    var rgb_tensor = LayoutTensor[DType.uint8, rgb_layout](rgb_device)
+    var rgb_tensor = LayoutTensor[DType.uint8, L](rgb_device)
 
     comptime block_size = 16
     var grid_x = ceildiv(width, block_size)
     var grid_y = ceildiv(height, block_size)
 
     ctx.enqueue_function[
-        mandelbulb_kernel[rgb_layout],
-        mandelbulb_kernel[rgb_layout],
+        mandelbulb_kernel[L],
+        mandelbulb_kernel[L],
     ](
         rgb_tensor, width, height,
         cam_x, cam_y, cam_z, cam_yaw, cam_pitch,
