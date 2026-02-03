@@ -1,11 +1,12 @@
 """GPU math helper functions for operations not optimized in stdlib.
 
-The stdlib math functions (sin, cos, sqrt, log2, exp2, rsqrt) already use
-PTX intrinsics on NVIDIA GPUs. This module provides GPU-compatible versions
-of functions that would otherwise call libm (which doesn't work on GPU).
+The stdlib math functions (sin, cos, sqrt, log2, exp2, rsqrt) already have
+GPU intrinsics. This module provides GPU-compatible versions of transcendental
+functions (atan, atan2, acos, pow) that would otherwise call libm (unavailable
+on GPU). Works on NVIDIA, AMD, and Apple GPUs.
 """
 
-from sys import is_nvidia_gpu
+from sys import is_gpu
 from math import sin, cos, sqrt, log2, exp2, atan, atan2, acos
 
 
@@ -17,8 +18,8 @@ from math import sin, cos, sqrt, log2, exp2, atan, atan2, acos
 fn gpu_atan(x: Float32) -> Float32:
     """Compute atan(x) using polynomial approximation on GPU, standard on CPU."""
     @parameter
-    if is_nvidia_gpu():
-        # Polynomial approximation for GPU (no atan intrinsic in PTX)
+    if is_gpu():
+        # Polynomial approximation for GPU (no atan intrinsic on any GPU)
         comptime PI_2: Float32 = 1.5707963267948966
 
         var abs_x = x if x >= Float32(0) else -x
@@ -41,7 +42,7 @@ fn gpu_atan(x: Float32) -> Float32:
 fn gpu_atan2(y: Float32, x: Float32) -> Float32:
     """Compute atan2(y, x)."""
     @parameter
-    if is_nvidia_gpu():
+    if is_gpu():
         comptime PI: Float32 = 3.14159265358979323846
         comptime PI_2: Float32 = 1.5707963267948966
 
@@ -75,7 +76,7 @@ fn gpu_pow(base: Float32, exp: Float32) -> Float32:
 fn gpu_acos(x: Float32) -> Float32:
     """Compute acos(x)."""
     @parameter
-    if is_nvidia_gpu():
+    if is_gpu():
         var clamped = x
         if clamped > Float32(1.0):
             clamped = Float32(1.0)
