@@ -2,8 +2,9 @@
 
 from gpu import global_idx
 from layout import Layout, LayoutTensor
+from math import sin, cos, log2, sqrt, exp2
 
-from gpu_math import gpu_sin, gpu_cos, gpu_log2, gpu_sqrt, gpu_atan2, gpu_exp2
+from gpu_math import gpu_atan2
 
 
 # ============================================================================
@@ -27,16 +28,16 @@ fn write_smooth_color[
         output[pixel_idx + 1] = 0
         output[pixel_idx + 2] = 0
     else:
-        var log_zn = Float32(0.5) * gpu_log2(Float32(final_r2))
-        var smooth_iter = Float32(iterations) + Float32(1.0) - gpu_log2(log_zn)
+        var log_zn = Float32(0.5) * log2(Float32(final_r2))
+        var smooth_iter = Float32(iterations) + Float32(1.0) - log2(log_zn)
 
         var t = smooth_iter * Float32(0.05) + Float32(color_seed)
         t = t - Float32(Int(t))
 
         var pi2 = Float32(6.28318530)
-        var r = Float32(0.45) + Float32(0.35) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.0)))
-        var g = Float32(0.40) + Float32(0.30) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.15)))
-        var b = Float32(0.55) + Float32(0.35) * gpu_cos(pi2 * (t * Float32(0.8) + Float32(0.35)))
+        var r = Float32(0.45) + Float32(0.35) * cos(pi2 * (t * Float32(0.8) + Float32(0.0)))
+        var g = Float32(0.40) + Float32(0.30) * cos(pi2 * (t * Float32(0.8) + Float32(0.15)))
+        var b = Float32(0.55) + Float32(0.35) * cos(pi2 * (t * Float32(0.8) + Float32(0.35)))
 
         var gray = (r + g + b) / Float32(3.0)
         r = gray + (r - gray) * Float32(1.1)
@@ -155,19 +156,19 @@ fn julia_kernel[
             var p_re = Float32(power_re)
             var p_im = Float32(power_im)
 
-            var r = gpu_sqrt(zx * zx + zy * zy)
+            var r = sqrt(zx * zx + zy * zy)
 
             if r < 1e-10:
                 z_re = c_re
                 z_im = c_im
             else:
                 var theta = gpu_atan2(zy, zx)
-                var ln_r = gpu_log2(r) * Float32(0.693147180559945)
-                var log2_mag = p_re * gpu_log2(r) - p_im * theta * Float32(1.4426950408889634)
-                var mag = gpu_exp2(log2_mag)
+                var ln_r = log2(r) * Float32(0.693147180559945)
+                var log2_mag = p_re * log2(r) - p_im * theta * Float32(1.4426950408889634)
+                var mag = exp2(log2_mag)
                 var angle = p_re * theta + p_im * ln_r
-                z_re = Float64(mag * gpu_cos(angle)) + c_re
-                z_im = Float64(mag * gpu_sin(angle)) + c_im
+                z_re = Float64(mag * cos(angle)) + c_re
+                z_im = Float64(mag * sin(angle)) + c_im
 
     var pixel_idx = (py * width + px) * 3
     write_smooth_color[output_layout](output, pixel_idx, iterations, imax, final_r2, color_seed)

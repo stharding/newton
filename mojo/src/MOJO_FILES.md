@@ -58,11 +58,14 @@ All use smooth iteration coloring with cosine gradient palette.
 ---
 
 ### `gpu_math.mojo`
-**Purpose:** GPU math helper functions using PTX intrinsics for NVIDIA GPUs.
+**Purpose:** GPU-compatible math functions for operations where stdlib calls libm (which won't work on GPU).
+
+**Note:** Basic functions (`sin`, `cos`, `sqrt`, `log2`, `exp2`, `rsqrt`) should use stdlib directly - they already have PTX intrinsics on NVIDIA GPUs.
 
 **Functions:**
-- **Basic PTX intrinsics:** `gpu_sin`, `gpu_cos`, `gpu_exp2`, `gpu_log2`, `gpu_sqrt`, `gpu_rsqrt`
-- **Derived functions:** `gpu_atan`, `gpu_atan2`, `gpu_pow`, `gpu_acos`
+- `gpu_atan`, `gpu_atan2` - Polynomial approximation (stdlib calls libm)
+- `gpu_pow` - base^exp via exp2/log2 (no stdlib equivalent)
+- `gpu_acos` - Uses gpu_atan2 internally
 
 ---
 

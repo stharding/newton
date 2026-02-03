@@ -4,7 +4,9 @@ This module provides distance estimator functions for 3D fractals,
 designed for use with ray marching in GPU kernels.
 """
 
-from gpu_math import gpu_sin, gpu_cos, gpu_sqrt, gpu_pow, gpu_log2, gpu_acos, gpu_atan2
+from math import sin, cos, sqrt, log2
+
+from gpu_math import gpu_pow, gpu_acos, gpu_atan2
 
 
 # ============================================================================
@@ -47,7 +49,7 @@ fn mandelbulb_de(
     var r = Float32(0.0)
 
     for _ in range(imax):
-        r = gpu_sqrt(zx * zx + zy * zy + zz * zz)
+        r = sqrt(zx * zx + zy * zy + zz * zz)
 
         if r > Float32(2.0):
             break
@@ -65,11 +67,11 @@ fn mandelbulb_de(
         var new_phi = phi * power
 
         # Convert back to Cartesian and add c (starting point)
-        var sin_theta = gpu_sin(new_theta)
-        zx = zr * sin_theta * gpu_cos(new_phi) + x
-        zy = zr * sin_theta * gpu_sin(new_phi) + y
-        zz = zr * gpu_cos(new_theta) + z
+        var sin_theta = sin(new_theta)
+        zx = zr * sin_theta * cos(new_phi) + x
+        zy = zr * sin_theta * sin(new_phi) + y
+        zz = zr * cos(new_theta) + z
 
     # Distance estimate: 0.5 * r * ln(r) / dr
     # Note: ln(r) = log2(r) * ln(2) ≈ log2(r) * 0.693147
-    return Float32(0.5) * r * gpu_log2(r) * Float32(0.693147180559945) / dr
+    return Float32(0.5) * r * log2(r) * Float32(0.693147180559945) / dr

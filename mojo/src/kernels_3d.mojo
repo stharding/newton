@@ -2,8 +2,9 @@
 
 from gpu import global_idx
 from layout import Layout, LayoutTensor
+from math import sin, cos, sqrt
 
-from gpu_math import gpu_sin, gpu_cos, gpu_sqrt, gpu_pow, gpu_acos, gpu_atan2
+from gpu_math import gpu_pow, gpu_acos, gpu_atan2
 from fractals_3d import mandelbulb_de, MAX_STEPS, MAX_DIST, EPSILON, NORMAL_EPSILON
 
 
@@ -41,10 +42,10 @@ fn mandelbulb_kernel[
     var ndc_y = (Float32(1.0) - Float32(2.0) * Float32(py) / Float32(height)) * fov
 
     # Build camera basis vectors from yaw and pitch
-    var cos_yaw = gpu_cos(cam_yaw)
-    var sin_yaw = gpu_sin(cam_yaw)
-    var cos_pitch = gpu_cos(cam_pitch)
-    var sin_pitch = gpu_sin(cam_pitch)
+    var cos_yaw = cos(cam_yaw)
+    var sin_yaw = sin(cam_yaw)
+    var cos_pitch = cos(cam_pitch)
+    var sin_pitch = sin(cam_pitch)
 
     # Forward direction
     var fwd_x = cos_pitch * sin_yaw
@@ -67,7 +68,7 @@ fn mandelbulb_kernel[
     var ray_dz = right_z * ndc_x + up_z * ndc_y + fwd_z
 
     # Normalize ray direction
-    var ray_len = gpu_sqrt(ray_dx * ray_dx + ray_dy * ray_dy + ray_dz * ray_dz)
+    var ray_len = sqrt(ray_dx * ray_dx + ray_dy * ray_dy + ray_dz * ray_dz)
     ray_dx = ray_dx / ray_len
     ray_dy = ray_dy / ray_len
     ray_dz = ray_dz / ray_len
@@ -107,7 +108,7 @@ fn mandelbulb_kernel[
         var ny = mandelbulb_de(pos_x, pos_y + NORMAL_EPSILON, pos_z, power, imax) - mandelbulb_de(pos_x, pos_y - NORMAL_EPSILON, pos_z, power, imax)
         var nz = mandelbulb_de(pos_x, pos_y, pos_z + NORMAL_EPSILON, power, imax) - mandelbulb_de(pos_x, pos_y, pos_z - NORMAL_EPSILON, power, imax)
 
-        var n_len = gpu_sqrt(nx * nx + ny * ny + nz * nz)
+        var n_len = sqrt(nx * nx + ny * ny + nz * nz)
         if n_len > Float32(1e-10):
             nx = nx / n_len
             ny = ny / n_len
@@ -130,7 +131,7 @@ fn mandelbulb_kernel[
         var half_x = light_x + view_x
         var half_y = light_y + view_y
         var half_z = light_z + view_z
-        var half_len = gpu_sqrt(half_x * half_x + half_y * half_y + half_z * half_z)
+        var half_len = sqrt(half_x * half_x + half_y * half_y + half_z * half_z)
         half_x = half_x / half_len
         half_y = half_y / half_len
         half_z = half_z / half_len

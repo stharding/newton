@@ -1,99 +1,16 @@
-"""GPU math helper functions with CPU fallbacks.
+"""GPU math helper functions for operations not optimized in stdlib.
 
-These functions use fast PTX intrinsics on NVIDIA GPUs and fall back
-to standard math on CPU.
+The stdlib math functions (sin, cos, sqrt, log2, exp2, rsqrt) already use
+PTX intrinsics on NVIDIA GPUs. This module provides GPU-compatible versions
+of functions that would otherwise call libm (which doesn't work on GPU).
 """
 
-from sys._assembly import inlined_assembly
 from sys import is_nvidia_gpu
 from math import sin, cos, sqrt, log2, exp2, atan, atan2, acos
 
 
 # ============================================================================
-# Basic Math Functions (PTX on GPU, standard math on CPU)
-# ============================================================================
-
-@always_inline
-fn gpu_sin(x: Float32) -> Float32:
-    @parameter
-    if is_nvidia_gpu():
-        return inlined_assembly[
-            "sin.approx.ftz.f32 $0, $1;",
-            Float32,
-            constraints="=f,f",
-            has_side_effect=False,
-        ](x)
-    else:
-        return sin(x)
-
-@always_inline
-fn gpu_cos(x: Float32) -> Float32:
-    @parameter
-    if is_nvidia_gpu():
-        return inlined_assembly[
-            "cos.approx.ftz.f32 $0, $1;",
-            Float32,
-            constraints="=f,f",
-            has_side_effect=False,
-        ](x)
-    else:
-        return cos(x)
-
-@always_inline
-fn gpu_exp2(x: Float32) -> Float32:
-    @parameter
-    if is_nvidia_gpu():
-        return inlined_assembly[
-            "ex2.approx.ftz.f32 $0, $1;",
-            Float32,
-            constraints="=f,f",
-            has_side_effect=False,
-        ](x)
-    else:
-        return exp2(x)
-
-@always_inline
-fn gpu_log2(x: Float32) -> Float32:
-    @parameter
-    if is_nvidia_gpu():
-        return inlined_assembly[
-            "lg2.approx.f32 $0, $1;",
-            Float32,
-            constraints="=f,f",
-            has_side_effect=False,
-        ](x)
-    else:
-        return log2(x)
-
-@always_inline
-fn gpu_rsqrt(x: Float32) -> Float32:
-    @parameter
-    if is_nvidia_gpu():
-        return inlined_assembly[
-            "rsqrt.approx.ftz.f32 $0, $1;",
-            Float32,
-            constraints="=f,f",
-            has_side_effect=False,
-        ](x)
-    else:
-        return 1.0 / sqrt(x)
-
-@always_inline
-fn gpu_sqrt(x: Float32) -> Float32:
-    @parameter
-    if is_nvidia_gpu():
-        return inlined_assembly[
-            "sqrt.approx.ftz.f32 $0, $1;",
-            Float32,
-            constraints="=f,f",
-            has_side_effect=False,
-        ](x)
-    else:
-        return sqrt(x)
-
-
-# ============================================================================
-# Derived Functions (same implementation, use above primitives)
+# GPU-compatible functions (stdlib versions call libm, won't work on GPU)
 # ============================================================================
 
 @always_inline
@@ -151,7 +68,7 @@ fn gpu_pow(base: Float32, exp: Float32) -> Float32:
     """Compute base^exp using GPU intrinsics: base^exp = 2^(exp * log2(base))."""
     if base <= Float32(0):
         return Float32(0.0)
-    return gpu_exp2(exp * gpu_log2(base))
+    return exp2(exp * log2(base))
 
 
 @always_inline
@@ -164,7 +81,7 @@ fn gpu_acos(x: Float32) -> Float32:
             clamped = Float32(1.0)
         elif clamped < Float32(-1.0):
             clamped = Float32(-1.0)
-        var sqrt_term = gpu_sqrt(Float32(1.0) - clamped * clamped)
+        var sqrt_term = sqrt(Float32(1.0) - clamped * clamped)
         return gpu_atan2(sqrt_term, clamped)
     else:
         return acos(x)
