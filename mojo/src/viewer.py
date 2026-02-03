@@ -247,35 +247,51 @@ class FractalRenderer:
         bottom = view.center_im - half_h
 
         if fractal_type == NEWTON:
-            return renderer.render_newton((
-                width, height, coefficients,
-                left, right, top, bottom,
-                tolerance, imax, color_seed, glow_intensity, view.zoom,
-            ))
+            params = renderer.NewtonParams(
+                width=width, height=height,
+                left=left, right=right, top=top, bottom=bottom,
+                tolerance=tolerance, imax=imax, color_seed=color_seed,
+                glow_intensity=glow_intensity, zoom=view.zoom,
+            )
+            return renderer.render_newton(params, coefficients)
         elif fractal_type == MANDELBROT:
-            return renderer.render_mandelbrot((
-                width, height, left, right, top, bottom, imax, color_seed,
-            ))
+            params = renderer.ViewParams(
+                width=width, height=height,
+                left=left, right=right, top=top, bottom=bottom,
+                imax=imax, color_seed=color_seed,
+            )
+            return renderer.render_mandelbrot(params)
         elif fractal_type == JULIA:
-            return renderer.render_julia((
-                width, height, left, right, top, bottom,
-                julia.c_re, julia.c_im, julia.power_re, julia.power_im,
-                imax, color_seed,
-            ))
+            params = renderer.JuliaParams(
+                width=width, height=height,
+                left=left, right=right, top=top, bottom=bottom,
+                c_re=julia.c_re, c_im=julia.c_im,
+                power_re=julia.power_re, power_im=julia.power_im,
+                imax=imax, color_seed=color_seed,
+            )
+            return renderer.render_julia(params)
         elif fractal_type == BURNING_SHIP:
-            return renderer.render_burning_ship((
-                width, height, left, right, top, bottom, imax, color_seed,
-            ))
+            params = renderer.ViewParams(
+                width=width, height=height,
+                left=left, right=right, top=top, bottom=bottom,
+                imax=imax, color_seed=color_seed,
+            )
+            return renderer.render_burning_ship(params)
         elif fractal_type == TRICORN:
-            return renderer.render_tricorn((
-                width, height, left, right, top, bottom, imax, color_seed,
-            ))
+            params = renderer.ViewParams(
+                width=width, height=height,
+                left=left, right=right, top=top, bottom=bottom,
+                imax=imax, color_seed=color_seed,
+            )
+            return renderer.render_tricorn(params)
         elif fractal_type == MANDELBULB:
-            return renderer.render_mandelbulb((
-                width, height,
-                camera.x, camera.y, camera.z, camera.yaw, camera.pitch,
-                mandelbulb_power, imax, color_seed,
-            ))
+            params = renderer.MandelbulbParams(
+                width=width, height=height,
+                cam_x=camera.x, cam_y=camera.y, cam_z=camera.z,
+                cam_yaw=camera.yaw, cam_pitch=camera.pitch,
+                power=mandelbulb_power, imax=imax, color_seed=color_seed,
+            )
+            return renderer.render_mandelbulb(params)
         else:
             raise ValueError(f"Unknown fractal type: {fractal_type}")
 
