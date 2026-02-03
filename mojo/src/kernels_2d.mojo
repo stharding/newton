@@ -1,10 +1,40 @@
 """2D fractal GPU kernels (Mandelbrot, Julia, Burning Ship, Tricorn)."""
 
+from complex import ComplexFloat64
 from gpu import global_idx
 from layout import Layout, LayoutTensor
-from math import sin, cos, log2, sqrt, exp2
+from math import clamp, cos, exp2, log2, pi, sin, sqrt, tau
 
 from gpu_math import gpu_atan2
+
+
+# ============================================================================
+# Constants
+# ============================================================================
+
+comptime ESCAPE_RADIUS_SQ: Float64 = 256.0
+"""Escape radius squared for iteration bailout."""
+
+comptime COLOR_FREQUENCY: Float32 = 0.05
+"""Frequency multiplier for smooth coloring."""
+
+comptime SATURATION_BOOST: Float32 = 1.1
+"""Saturation boost for color output."""
+
+
+# ============================================================================
+# Helper: Convert pixel to complex coordinate
+# ============================================================================
+
+@always_inline
+fn pixel_to_complex(
+    px: Int, py: Int, width: Int, height: Int,
+    left: Float64, right: Float64, top: Float64, bottom: Float64,
+) -> ComplexFloat64:
+    """Convert pixel coordinates to complex plane coordinates."""
+    var re = left + (Float64(px) / Float64(width)) * (right - left)
+    var im = top + (Float64(py) / Float64(height)) * (bottom - top)
+    return ComplexFloat64(re, im)
 
 
 # ============================================================================
@@ -31,25 +61,24 @@ fn write_smooth_color[
         var log_zn = Float32(0.5) * log2(Float32(final_r2))
         var smooth_iter = Float32(iterations) + Float32(1.0) - log2(log_zn)
 
-        var t = smooth_iter * Float32(0.05) + Float32(color_seed)
+        var t = smooth_iter * COLOR_FREQUENCY + Float32(color_seed)
         t = t - Float32(Int(t))
 
-        var pi2 = Float32(6.28318530)
-        var r = Float32(0.45) + Float32(0.35) * cos(pi2 * (t * Float32(0.8) + Float32(0.0)))
-        var g = Float32(0.40) + Float32(0.30) * cos(pi2 * (t * Float32(0.8) + Float32(0.15)))
-        var b = Float32(0.55) + Float32(0.35) * cos(pi2 * (t * Float32(0.8) + Float32(0.35)))
+        comptime TAU32: Float32 = tau
+        var r = Float32(0.45) + Float32(0.35) * cos(TAU32 * (t * Float32(0.8) + Float32(0.0)))
+        var g = Float32(0.40) + Float32(0.30) * cos(TAU32 * (t * Float32(0.8) + Float32(0.15)))
+        var b = Float32(0.55) + Float32(0.35) * cos(TAU32 * (t * Float32(0.8) + Float32(0.35)))
 
+        # Boost saturation
         var gray = (r + g + b) / Float32(3.0)
-        r = gray + (r - gray) * Float32(1.1)
-        g = gray + (g - gray) * Float32(1.1)
-        b = gray + (b - gray) * Float32(1.1)
+        r = gray + (r - gray) * SATURATION_BOOST
+        g = gray + (g - gray) * SATURATION_BOOST
+        b = gray + (b - gray) * SATURATION_BOOST
 
-        if r < Float32(0.0): r = Float32(0.0)
-        if r > Float32(1.0): r = Float32(1.0)
-        if g < Float32(0.0): g = Float32(0.0)
-        if g > Float32(1.0): g = Float32(1.0)
-        if b < Float32(0.0): b = Float32(0.0)
-        if b > Float32(1.0): b = Float32(1.0)
+        # Clamp to [0, 1]
+        r = clamp(r, Float32(0.0), Float32(1.0))
+        g = clamp(g, Float32(0.0), Float32(1.0))
+        b = clamp(b, Float32(0.0), Float32(1.0))
 
         output[pixel_idx] = UInt8(r * Float32(255.0))
         output[pixel_idx + 1] = UInt8(g * Float32(255.0))
@@ -79,28 +108,18 @@ fn mandelbrot_kernel[
     if px >= width or py >= height:
         return
 
-    var c_re = window_left + (Float64(px) / Float64(width)) * (window_right - window_left)
-    var c_im = window_top + (Float64(py) / Float64(height)) * (window_bottom - window_top)
-
-    var z_re = Float64(0.0)
-    var z_im = Float64(0.0)
+    var c = pixel_to_complex(px, py, width, height, window_left, window_right, window_top, window_bottom)
+    var z = ComplexFloat64(0.0, 0.0)
     var iterations = imax
 
-    var z_re2 = Float64(0.0)
-    var z_im2 = Float64(0.0)
-
     for count in range(imax):
-        z_re2 = z_re * z_re
-        z_im2 = z_im * z_im
-        if z_re2 + z_im2 > 256.0:
+        if z.squared_norm() > ESCAPE_RADIUS_SQ:
             iterations = count
             break
-        var new_re = z_re2 - z_im2 + c_re
-        z_im = 2.0 * z_re * z_im + c_im
-        z_re = new_re
+        z = z.squared_add(c)
 
     var pixel_idx = (py * width + px) * 3
-    write_smooth_color[output_layout](output, pixel_idx, iterations, imax, z_re2 + z_im2, color_seed)
+    write_smooth_color[output_layout](output, pixel_idx, iterations, imax, z.squared_norm(), color_seed)
 
 
 # ============================================================================
@@ -130,45 +149,49 @@ fn julia_kernel[
     if px >= width or py >= height:
         return
 
-    var z_re = window_left + (Float64(px) / Float64(width)) * (window_right - window_left)
-    var z_im = window_top + (Float64(py) / Float64(height)) * (window_bottom - window_top)
+    var z = pixel_to_complex(px, py, width, height, window_left, window_right, window_top, window_bottom)
+    var c = ComplexFloat64(c_re, c_im)
 
     var iterations = imax
     var final_r2 = Float64(0.0)
 
-    var use_simple_square = power_im == 0.0 and power_re == 2.0
+    # Detect positive integer powers for direct computation (avoids atan2 discontinuity)
+    var int_power = Int(power_re)
+    var is_int_power = power_im == 0.0 and power_re == Float64(int_power) and int_power >= 2
 
     for count in range(imax):
-        var r2 = z_re * z_re + z_im * z_im
-        if r2 > 256.0:
+        var r2 = z.squared_norm()
+        if r2 > ESCAPE_RADIUS_SQ:
             iterations = count
             final_r2 = r2
             break
 
-        if use_simple_square:
-            var new_re = z_re * z_re - z_im * z_im + c_re
-            var new_im = 2.0 * z_re * z_im + c_im
-            z_re = new_re
-            z_im = new_im
+        if is_int_power:
+            # Compute z^n via iterative complex multiplication
+            var result = z
+            for _ in range(int_power - 1):
+                result = result * z
+            z = result + c
         else:
-            var zx = Float32(z_re)
-            var zy = Float32(z_im)
+            # General complex power: z^p = exp(p * log(z))
+            var zx = Float32(z.re)
+            var zy = Float32(z.im)
             var p_re = Float32(power_re)
             var p_im = Float32(power_im)
 
             var r = sqrt(zx * zx + zy * zy)
 
             if r < 1e-10:
-                z_re = c_re
-                z_im = c_im
+                z = c
             else:
+                comptime LN2: Float32 = 0.693147180559945
+                comptime LOG2E: Float32 = 1.4426950408889634
                 var theta = gpu_atan2(zy, zx)
-                var ln_r = log2(r) * Float32(0.693147180559945)
-                var log2_mag = p_re * log2(r) - p_im * theta * Float32(1.4426950408889634)
+                var ln_r = log2(r) * LN2
+                var log2_mag = p_re * log2(r) - p_im * theta * LOG2E
                 var mag = exp2(log2_mag)
                 var angle = p_re * theta + p_im * ln_r
-                z_re = Float64(mag * cos(angle)) + c_re
-                z_im = Float64(mag * sin(angle)) + c_im
+                z = ComplexFloat64(Float64(mag * cos(angle)), Float64(mag * sin(angle))) + c
 
     var pixel_idx = (py * width + px) * 3
     write_smooth_color[output_layout](output, pixel_idx, iterations, imax, final_r2, color_seed)
@@ -197,27 +220,20 @@ fn burning_ship_kernel[
     if px >= width or py >= height:
         return
 
-    var c_re = window_left + (Float64(px) / Float64(width)) * (window_right - window_left)
-    var c_im = window_top + (Float64(py) / Float64(height)) * (window_bottom - window_top)
-
-    var z_re = Float64(0.0)
-    var z_im = Float64(0.0)
+    var c = pixel_to_complex(px, py, width, height, window_left, window_right, window_top, window_bottom)
+    var z = ComplexFloat64(0.0, 0.0)
     var iterations = imax
     var final_r2 = Float64(0.0)
 
     for count in range(imax):
-        var z_re2 = z_re * z_re
-        var z_im2 = z_im * z_im
-        var r2 = z_re2 + z_im2
-        if r2 > 256.0:
+        var r2 = z.squared_norm()
+        if r2 > ESCAPE_RADIUS_SQ:
             iterations = count
             final_r2 = r2
             break
-        var abs_re = z_re if z_re >= 0 else -z_re
-        var abs_im = z_im if z_im >= 0 else -z_im
-        var new_re = abs_re * abs_re - abs_im * abs_im + c_re
-        z_im = 2.0 * abs_re * abs_im + c_im
-        z_re = new_re
+        # Take absolute values before squaring
+        var abs_z = ComplexFloat64(z.re if z.re >= 0 else -z.re, z.im if z.im >= 0 else -z.im)
+        z = abs_z.squared_add(c)
 
     var pixel_idx = (py * width + px) * 3
     write_smooth_color[output_layout](output, pixel_idx, iterations, imax, final_r2, color_seed)
@@ -246,25 +262,19 @@ fn tricorn_kernel[
     if px >= width or py >= height:
         return
 
-    var c_re = window_left + (Float64(px) / Float64(width)) * (window_right - window_left)
-    var c_im = window_top + (Float64(py) / Float64(height)) * (window_bottom - window_top)
-
-    var z_re = Float64(0.0)
-    var z_im = Float64(0.0)
+    var c = pixel_to_complex(px, py, width, height, window_left, window_right, window_top, window_bottom)
+    var z = ComplexFloat64(0.0, 0.0)
     var iterations = imax
     var final_r2 = Float64(0.0)
 
     for count in range(imax):
-        var z_re2 = z_re * z_re
-        var z_im2 = z_im * z_im
-        var r2 = z_re2 + z_im2
-        if r2 > 256.0:
+        var r2 = z.squared_norm()
+        if r2 > ESCAPE_RADIUS_SQ:
             iterations = count
             final_r2 = r2
             break
-        var new_re = z_re2 - z_im2 + c_re
-        z_im = -2.0 * z_re * z_im + c_im
-        z_re = new_re
+        # Square the conjugate: conj(z)² + c
+        z = z.conj().squared_add(c)
 
     var pixel_idx = (py * width + px) * 3
     write_smooth_color[output_layout](output, pixel_idx, iterations, imax, final_r2, color_seed)

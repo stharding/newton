@@ -3,29 +3,68 @@
 from os import abort
 from python import Python, PythonObject
 from python.bindings import PythonModuleBuilder
-from random import random_ui64
-from math import ceildiv, atan2
+from math import atan2, ceildiv
 from gpu.host import DeviceContext, HostBuffer, DeviceBuffer
 from layout import Layout, LayoutTensor
-from sys import has_accelerator  # Used by has_gpu()
+from sys import has_accelerator
 
 from kernels_newton import newton_kernel, colorize_kernel
 from kernels_2d import mandelbrot_kernel, julia_kernel, burning_ship_kernel, tricorn_kernel
 from kernels_3d import mandelbulb_kernel
 
-# Single layout for all buffers - the size parameter is unused for 1D row-major
+
+# ============================================================================
+# Constants
+# ============================================================================
+
 comptime L = Layout.row_major(1)
+"""Single layout for all buffers - size parameter unused for 1D row-major."""
+
+comptime BLOCK_SIZE: Int = 16
+"""GPU thread block size for 2D kernels."""
+
+comptime MAX_ROOTS: Int = 16
+"""Maximum number of roots to track for Newton fractal."""
+
+comptime MAX_COEFFS: Int = 16
+"""Maximum polynomial coefficients for Newton fractal."""
 
 
 # ============================================================================
-# Python-exposed render functions
+# Helper: Convert host buffer to numpy array
+# ============================================================================
+
+fn host_buffer_to_numpy(
+    rgb_host: HostBuffer[DType.uint8], width: Int, height: Int
+) raises -> PythonObject:
+    """Convert a host RGB buffer to a numpy array."""
+    var np = Python.import_module("numpy")
+    var ctypes = Python.import_module("ctypes")
+    var ptr = rgb_host.unsafe_ptr()
+    var c_ptr = ctypes.cast(Int(ptr), ctypes.POINTER(ctypes.c_uint8))
+    var arr = np.ctypeslib.as_array(c_ptr, shape=Python.tuple(height, width, 3))
+    return arr.copy()
+
+
+# ============================================================================
+# Helper: Compute grid dimensions
+# ============================================================================
+
+@always_inline
+fn compute_grid(width: Int, height: Int) -> Tuple[Int, Int]:
+    """Compute grid dimensions for GPU kernel launch."""
+    return Tuple(ceildiv(width, BLOCK_SIZE), ceildiv(height, BLOCK_SIZE))
+
+
+# ============================================================================
+# Newton fractal renderer (special case - two-pass with root discovery)
 # ============================================================================
 
 @export
 fn render_newton(py_args: PythonObject) raises -> PythonObject:
     """Render Newton fractal to numpy array.
 
-    Args is a tuple: (width, height, coeffs, left, right, top, bottom, tolerance, imax, color_seed, glow_intensity, zoom)
+    Args tuple: (width, height, coeffs, left, right, top, bottom, tolerance, imax, color_seed, glow_intensity, zoom)
     """
     var width = Int(py=py_args[0])
     var height = Int(py=py_args[1])
@@ -41,24 +80,22 @@ fn render_newton(py_args: PythonObject) raises -> PythonObject:
     var zoom = Float64(py=py_args[11])
 
     var num_coeffs = len(py_coeffs)
-
     var ctx = DeviceContext()
-
-    var newton_size = width * height * 3
     var rgb_size = width * height * 3
-    var max_roots = 16
-    var max_coeffs = 16
+    var newton_size = width * height * 3
 
-    var coeffs_host = ctx.enqueue_create_host_buffer[DType.float64](max_coeffs)
-    var coeffs_device = ctx.enqueue_create_buffer[DType.float64](max_coeffs)
+    # Create buffers
+    var coeffs_host = ctx.enqueue_create_host_buffer[DType.float64](MAX_COEFFS)
+    var coeffs_device = ctx.enqueue_create_buffer[DType.float64](MAX_COEFFS)
     var newton_device = ctx.enqueue_create_buffer[DType.float64](newton_size)
     var newton_host = ctx.enqueue_create_host_buffer[DType.float64](newton_size)
-    var roots_host = ctx.enqueue_create_host_buffer[DType.float64](max_roots * 5)
-    var roots_device = ctx.enqueue_create_buffer[DType.float64](max_roots * 5)
+    var roots_host = ctx.enqueue_create_host_buffer[DType.float64](MAX_ROOTS * 5)
+    var roots_device = ctx.enqueue_create_buffer[DType.float64](MAX_ROOTS * 5)
     var rgb_device = ctx.enqueue_create_buffer[DType.uint8](rgb_size)
     var rgb_host = ctx.enqueue_create_host_buffer[DType.uint8](rgb_size)
     ctx.synchronize()
 
+    # Copy coefficients to GPU
     for i in range(num_coeffs):
         coeffs_host[i] = Float64(py=py_coeffs[i])
     ctx.enqueue_copy(coeffs_device, coeffs_host)
@@ -67,10 +104,11 @@ fn render_newton(py_args: PythonObject) raises -> PythonObject:
     var coeffs_tensor = LayoutTensor[DType.float64, L](coeffs_device)
     var newton_tensor = LayoutTensor[DType.float64, L](newton_device)
 
-    comptime block_size = 16
-    var grid_x = ceildiv(width, block_size)
-    var grid_y = ceildiv(height, block_size)
+    var grid_x: Int
+    var grid_y: Int
+    grid_x, grid_y = compute_grid(width, height)
 
+    # Pass 1: Newton iteration
     ctx.enqueue_function[
         newton_kernel[L, L],
         newton_kernel[L, L],
@@ -78,13 +116,46 @@ fn render_newton(py_args: PythonObject) raises -> PythonObject:
         coeffs_tensor, num_coeffs, newton_tensor,
         width, height, left, right, top, bottom, tolerance, imax,
         grid_dim=(grid_x, grid_y),
-        block_dim=(block_size, block_size),
+        block_dim=(BLOCK_SIZE, BLOCK_SIZE),
     )
 
     ctx.enqueue_copy(newton_host, newton_device)
     ctx.synchronize()
 
-    # Discover roots
+    # Discover and sort roots (CPU)
+    var num_roots = _discover_roots(newton_host, roots_host, width, height, imax, tolerance)
+    _sort_roots_by_angle(roots_host, num_roots)
+    _assign_root_colors(roots_host, num_roots, color_seed)
+
+    ctx.enqueue_copy(roots_device, roots_host)
+    ctx.synchronize()
+
+    # Pass 2: Colorization
+    var roots_tensor = LayoutTensor[DType.float64, L](roots_device)
+    var rgb_tensor = LayoutTensor[DType.uint8, L](rgb_device)
+
+    ctx.enqueue_function[
+        colorize_kernel[L, L, L],
+        colorize_kernel[L, L, L],
+    ](
+        newton_tensor, roots_tensor, num_roots, rgb_tensor,
+        width, height, tolerance, imax, glow_intensity, zoom,
+        grid_dim=(grid_x, grid_y),
+        block_dim=(BLOCK_SIZE, BLOCK_SIZE),
+    )
+
+    ctx.enqueue_copy(rgb_host, rgb_device)
+    ctx.synchronize()
+
+    return host_buffer_to_numpy(rgb_host, width, height)
+
+
+fn _discover_roots(
+    newton_host: HostBuffer[DType.float64],
+    roots_host: HostBuffer[DType.float64],
+    width: Int, height: Int, imax: Int, tolerance: Float64,
+) -> Int:
+    """Discover unique roots from Newton iteration output."""
     var num_roots = 0
     var step_x = width // 32
     var step_y = height // 32
@@ -92,6 +163,8 @@ fn render_newton(py_args: PythonObject) raises -> PythonObject:
         step_x = 1
     if step_y < 1:
         step_y = 1
+
+    var tol_sq = tolerance * tolerance * 4
 
     for py in range(0, height, step_y):
         for px in range(0, width, step_x):
@@ -102,7 +175,6 @@ fn render_newton(py_args: PythonObject) raises -> PythonObject:
 
             if iterations >= 0 and iterations < Float64(imax):
                 var found = False
-                var tol_sq = tolerance * tolerance * 4
                 for i in range(num_roots):
                     var root_re = Float64(roots_host[i * 5])
                     var root_im = Float64(roots_host[i * 5 + 1])
@@ -112,12 +184,16 @@ fn render_newton(py_args: PythonObject) raises -> PythonObject:
                     if dist_sq < tol_sq:
                         found = True
                         break
-                if not found and num_roots < 16:
+                if not found and num_roots < MAX_ROOTS:
                     roots_host[num_roots * 5] = re
                     roots_host[num_roots * 5 + 1] = im
                     num_roots += 1
 
-    # Sort roots by angle for consistent coloring
+    return num_roots
+
+
+fn _sort_roots_by_angle(roots_host: HostBuffer[DType.float64], num_roots: Int):
+    """Sort roots by angle for consistent coloring."""
     for i in range(num_roots):
         for j in range(i + 1, num_roots):
             var re_i = Float64(roots_host[i * 5])
@@ -132,60 +208,41 @@ fn render_newton(py_args: PythonObject) raises -> PythonObject:
                 roots_host[j * 5] = re_i
                 roots_host[j * 5 + 1] = im_i
 
-    # Assign colors
+
+fn _get_palette_color(idx: Int) -> Tuple[Float64, Float64, Float64]:
+    """Get RGB color from palette by index (mod 8)."""
+    var i = idx % 8
+    if i == 0:
+        return Tuple(Float64(210.0), Float64(120.0), Float64(120.0))  # Rose
+    elif i == 1:
+        return Tuple(Float64(95.0), Float64(158.0), Float64(160.0))   # Teal
+    elif i == 2:
+        return Tuple(Float64(190.0), Float64(165.0), Float64(100.0))  # Gold
+    elif i == 3:
+        return Tuple(Float64(110.0), Float64(130.0), Float64(180.0))  # Slate blue
+    elif i == 4:
+        return Tuple(Float64(130.0), Float64(170.0), Float64(130.0))  # Sage
+    elif i == 5:
+        return Tuple(Float64(180.0), Float64(130.0), Float64(155.0))  # Mauve
+    elif i == 6:
+        return Tuple(Float64(160.0), Float64(150.0), Float64(140.0))  # Stone
+    else:
+        return Tuple(Float64(150.0), Float64(140.0), Float64(180.0))  # Lavender
+
+
+fn _assign_root_colors(roots_host: HostBuffer[DType.float64], num_roots: Int, color_seed: Float64):
+    """Assign colors to each root based on palette index."""
     for i in range(num_roots):
-        var palette_idx = (i + Int(color_seed * 8)) % 8
-        var r_col: Float64
-        var g_col: Float64
-        var b_col: Float64
+        var palette_idx = i + Int(color_seed * 8)
+        var color = _get_palette_color(palette_idx)
+        roots_host[i * 5 + 2] = color[0]
+        roots_host[i * 5 + 3] = color[1]
+        roots_host[i * 5 + 4] = color[2]
 
-        if palette_idx == 0:
-            r_col = 210.0; g_col = 120.0; b_col = 120.0
-        elif palette_idx == 1:
-            r_col = 95.0; g_col = 158.0; b_col = 160.0
-        elif palette_idx == 2:
-            r_col = 190.0; g_col = 165.0; b_col = 100.0
-        elif palette_idx == 3:
-            r_col = 110.0; g_col = 130.0; b_col = 180.0
-        elif palette_idx == 4:
-            r_col = 130.0; g_col = 170.0; b_col = 130.0
-        elif palette_idx == 5:
-            r_col = 180.0; g_col = 130.0; b_col = 155.0
-        elif palette_idx == 6:
-            r_col = 160.0; g_col = 150.0; b_col = 140.0
-        else:
-            r_col = 150.0; g_col = 140.0; b_col = 180.0
 
-        roots_host[i * 5 + 2] = r_col
-        roots_host[i * 5 + 3] = g_col
-        roots_host[i * 5 + 4] = b_col
-
-    ctx.enqueue_copy(roots_device, roots_host)
-    ctx.synchronize()
-
-    var roots_tensor = LayoutTensor[DType.float64, L](roots_device)
-    var rgb_tensor = LayoutTensor[DType.uint8, L](rgb_device)
-
-    ctx.enqueue_function[
-        colorize_kernel[L, L, L],
-        colorize_kernel[L, L, L],
-    ](
-        newton_tensor, roots_tensor, num_roots, rgb_tensor,
-        width, height, tolerance, imax, glow_intensity, zoom,
-        grid_dim=(grid_x, grid_y),
-        block_dim=(block_size, block_size),
-    )
-
-    ctx.enqueue_copy(rgb_host, rgb_device)
-    ctx.synchronize()
-
-    var np = Python.import_module("numpy")
-    var ctypes = Python.import_module("ctypes")
-    var ptr = rgb_host.unsafe_ptr()
-    var c_ptr = ctypes.cast(Int(ptr), ctypes.POINTER(ctypes.c_uint8))
-    var arr = np.ctypeslib.as_array(c_ptr, shape=Python.tuple(height, width, 3))
-    return arr.copy()
-
+# ============================================================================
+# 2D Fractal renderers (single-pass)
+# ============================================================================
 
 @export
 fn render_mandelbrot(py_args: PythonObject) raises -> PythonObject:
@@ -201,16 +258,14 @@ fn render_mandelbrot(py_args: PythonObject) raises -> PythonObject:
 
     var ctx = DeviceContext()
     var rgb_size = width * height * 3
-
     var rgb_device = ctx.enqueue_create_buffer[DType.uint8](rgb_size)
     var rgb_host = ctx.enqueue_create_host_buffer[DType.uint8](rgb_size)
     ctx.synchronize()
 
     var rgb_tensor = LayoutTensor[DType.uint8, L](rgb_device)
-
-    comptime block_size = 16
-    var grid_x = ceildiv(width, block_size)
-    var grid_y = ceildiv(height, block_size)
+    var grid_x: Int
+    var grid_y: Int
+    grid_x, grid_y = compute_grid(width, height)
 
     ctx.enqueue_function[
         mandelbrot_kernel[L],
@@ -218,18 +273,13 @@ fn render_mandelbrot(py_args: PythonObject) raises -> PythonObject:
     ](
         rgb_tensor, width, height, left, right, top, bottom, imax, color_seed,
         grid_dim=(grid_x, grid_y),
-        block_dim=(block_size, block_size),
+        block_dim=(BLOCK_SIZE, BLOCK_SIZE),
     )
 
     ctx.enqueue_copy(rgb_host, rgb_device)
     ctx.synchronize()
 
-    var np = Python.import_module("numpy")
-    var ctypes = Python.import_module("ctypes")
-    var ptr = rgb_host.unsafe_ptr()
-    var c_ptr = ctypes.cast(Int(ptr), ctypes.POINTER(ctypes.c_uint8))
-    var arr = np.ctypeslib.as_array(c_ptr, shape=Python.tuple(height, width, 3))
-    return arr.copy()
+    return host_buffer_to_numpy(rgb_host, width, height)
 
 
 @export
@@ -250,16 +300,14 @@ fn render_julia(py_args: PythonObject) raises -> PythonObject:
 
     var ctx = DeviceContext()
     var rgb_size = width * height * 3
-
     var rgb_device = ctx.enqueue_create_buffer[DType.uint8](rgb_size)
     var rgb_host = ctx.enqueue_create_host_buffer[DType.uint8](rgb_size)
     ctx.synchronize()
 
     var rgb_tensor = LayoutTensor[DType.uint8, L](rgb_device)
-
-    comptime block_size = 16
-    var grid_x = ceildiv(width, block_size)
-    var grid_y = ceildiv(height, block_size)
+    var grid_x: Int
+    var grid_y: Int
+    grid_x, grid_y = compute_grid(width, height)
 
     ctx.enqueue_function[
         julia_kernel[L],
@@ -268,18 +316,13 @@ fn render_julia(py_args: PythonObject) raises -> PythonObject:
         rgb_tensor, width, height, left, right, top, bottom,
         c_re, c_im, power_re, power_im, imax, color_seed,
         grid_dim=(grid_x, grid_y),
-        block_dim=(block_size, block_size),
+        block_dim=(BLOCK_SIZE, BLOCK_SIZE),
     )
 
     ctx.enqueue_copy(rgb_host, rgb_device)
     ctx.synchronize()
 
-    var np = Python.import_module("numpy")
-    var ctypes = Python.import_module("ctypes")
-    var ptr = rgb_host.unsafe_ptr()
-    var c_ptr = ctypes.cast(Int(ptr), ctypes.POINTER(ctypes.c_uint8))
-    var arr = np.ctypeslib.as_array(c_ptr, shape=Python.tuple(height, width, 3))
-    return arr.copy()
+    return host_buffer_to_numpy(rgb_host, width, height)
 
 
 @export
@@ -296,16 +339,14 @@ fn render_burning_ship(py_args: PythonObject) raises -> PythonObject:
 
     var ctx = DeviceContext()
     var rgb_size = width * height * 3
-
     var rgb_device = ctx.enqueue_create_buffer[DType.uint8](rgb_size)
     var rgb_host = ctx.enqueue_create_host_buffer[DType.uint8](rgb_size)
     ctx.synchronize()
 
     var rgb_tensor = LayoutTensor[DType.uint8, L](rgb_device)
-
-    comptime block_size = 16
-    var grid_x = ceildiv(width, block_size)
-    var grid_y = ceildiv(height, block_size)
+    var grid_x: Int
+    var grid_y: Int
+    grid_x, grid_y = compute_grid(width, height)
 
     ctx.enqueue_function[
         burning_ship_kernel[L],
@@ -313,18 +354,13 @@ fn render_burning_ship(py_args: PythonObject) raises -> PythonObject:
     ](
         rgb_tensor, width, height, left, right, top, bottom, imax, color_seed,
         grid_dim=(grid_x, grid_y),
-        block_dim=(block_size, block_size),
+        block_dim=(BLOCK_SIZE, BLOCK_SIZE),
     )
 
     ctx.enqueue_copy(rgb_host, rgb_device)
     ctx.synchronize()
 
-    var np = Python.import_module("numpy")
-    var ctypes = Python.import_module("ctypes")
-    var ptr = rgb_host.unsafe_ptr()
-    var c_ptr = ctypes.cast(Int(ptr), ctypes.POINTER(ctypes.c_uint8))
-    var arr = np.ctypeslib.as_array(c_ptr, shape=Python.tuple(height, width, 3))
-    return arr.copy()
+    return host_buffer_to_numpy(rgb_host, width, height)
 
 
 @export
@@ -341,16 +377,14 @@ fn render_tricorn(py_args: PythonObject) raises -> PythonObject:
 
     var ctx = DeviceContext()
     var rgb_size = width * height * 3
-
     var rgb_device = ctx.enqueue_create_buffer[DType.uint8](rgb_size)
     var rgb_host = ctx.enqueue_create_host_buffer[DType.uint8](rgb_size)
     ctx.synchronize()
 
     var rgb_tensor = LayoutTensor[DType.uint8, L](rgb_device)
-
-    comptime block_size = 16
-    var grid_x = ceildiv(width, block_size)
-    var grid_y = ceildiv(height, block_size)
+    var grid_x: Int
+    var grid_y: Int
+    grid_x, grid_y = compute_grid(width, height)
 
     ctx.enqueue_function[
         tricorn_kernel[L],
@@ -358,19 +392,18 @@ fn render_tricorn(py_args: PythonObject) raises -> PythonObject:
     ](
         rgb_tensor, width, height, left, right, top, bottom, imax, color_seed,
         grid_dim=(grid_x, grid_y),
-        block_dim=(block_size, block_size),
+        block_dim=(BLOCK_SIZE, BLOCK_SIZE),
     )
 
     ctx.enqueue_copy(rgb_host, rgb_device)
     ctx.synchronize()
 
-    var np = Python.import_module("numpy")
-    var ctypes = Python.import_module("ctypes")
-    var ptr = rgb_host.unsafe_ptr()
-    var c_ptr = ctypes.cast(Int(ptr), ctypes.POINTER(ctypes.c_uint8))
-    var arr = np.ctypeslib.as_array(c_ptr, shape=Python.tuple(height, width, 3))
-    return arr.copy()
+    return host_buffer_to_numpy(rgb_host, width, height)
 
+
+# ============================================================================
+# 3D Fractal renderer
+# ============================================================================
 
 @export
 fn render_mandelbulb(py_args: PythonObject) raises -> PythonObject:
@@ -388,16 +421,14 @@ fn render_mandelbulb(py_args: PythonObject) raises -> PythonObject:
 
     var ctx = DeviceContext()
     var rgb_size = width * height * 3
-
     var rgb_device = ctx.enqueue_create_buffer[DType.uint8](rgb_size)
     var rgb_host = ctx.enqueue_create_host_buffer[DType.uint8](rgb_size)
     ctx.synchronize()
 
     var rgb_tensor = LayoutTensor[DType.uint8, L](rgb_device)
-
-    comptime block_size = 16
-    var grid_x = ceildiv(width, block_size)
-    var grid_y = ceildiv(height, block_size)
+    var grid_x: Int
+    var grid_y: Int
+    grid_x, grid_y = compute_grid(width, height)
 
     ctx.enqueue_function[
         mandelbulb_kernel[L],
@@ -407,19 +438,18 @@ fn render_mandelbulb(py_args: PythonObject) raises -> PythonObject:
         cam_x, cam_y, cam_z, cam_yaw, cam_pitch,
         power, imax, color_seed,
         grid_dim=(grid_x, grid_y),
-        block_dim=(block_size, block_size),
+        block_dim=(BLOCK_SIZE, BLOCK_SIZE),
     )
 
     ctx.enqueue_copy(rgb_host, rgb_device)
     ctx.synchronize()
 
-    var np = Python.import_module("numpy")
-    var ctypes = Python.import_module("ctypes")
-    var ptr = rgb_host.unsafe_ptr()
-    var c_ptr = ctypes.cast(Int(ptr), ctypes.POINTER(ctypes.c_uint8))
-    var arr = np.ctypeslib.as_array(c_ptr, shape=Python.tuple(height, width, 3))
-    return arr.copy()
+    return host_buffer_to_numpy(rgb_host, width, height)
 
+
+# ============================================================================
+# GPU info functions
+# ============================================================================
 
 @export
 fn has_gpu() -> PythonObject:

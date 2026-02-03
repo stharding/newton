@@ -2,7 +2,7 @@
 
 from gpu import global_idx
 from layout import Layout, LayoutTensor
-from math import log2
+from math import clamp, log2
 
 
 # ============================================================================
@@ -91,11 +91,7 @@ fn newton_kernel[
             var log_prev = log2(prev_diff_sq + 1e-30)
             var log_curr = log2(diff_sq + 1e-30)
             var log_tol = log2(tol_sq)
-            var frac = (log_tol - log_prev) / (log_curr - log_prev + 1e-10)
-            if frac < 0.0:
-                frac = 0.0
-            if frac > 1.0:
-                frac = 1.0
+            var frac = clamp((log_tol - log_prev) / (log_curr - log_prev + 1e-10), 0.0, 1.0)
             iterations = Float64(count) + frac
             break
         prev_diff_sq = diff_sq
@@ -164,46 +160,30 @@ fn colorize_kernel[
                 best_dist_sq = dist_sq
                 root_idx = i
 
-        if num_roots > 0:
-            var base_r = rebind[Float64](roots[root_idx * 5 + 2])
-            var base_g = rebind[Float64](roots[root_idx * 5 + 3])
-            var base_b = rebind[Float64](roots[root_idx * 5 + 4])
+        var base_r = rebind[Float64](roots[root_idx * 5 + 2])
+        var base_g = rebind[Float64](roots[root_idx * 5 + 3])
+        var base_b = rebind[Float64](roots[root_idx * 5 + 4])
 
-            var glow_start = GLOW_BASE + GLOW_ZOOM_SCALE / (zoom + GLOW_ZOOM_OFFSET)
+        var glow_start = GLOW_BASE + GLOW_ZOOM_SCALE / (zoom + GLOW_ZOOM_OFFSET)
 
-            var t = (iterations - glow_start) / GLOW_RANGE
-            if t < 0.0:
-                t = 0.0
-            if t > 1.0:
-                t = 1.0
+        var t = clamp((iterations - glow_start) / GLOW_RANGE, 0.0, 1.0)
 
-            var zoom_scale = 1.0
-            if zoom > 1.0:
-                zoom_scale = 1.0 / log2(zoom + 1.0)
-                if zoom_scale < GLOW_MIN_ZOOM_SCALE:
-                    zoom_scale = GLOW_MIN_ZOOM_SCALE
+        var zoom_scale = 1.0
+        if zoom > 1.0:
+            zoom_scale = 1.0 / log2(zoom + 1.0)
+            if zoom_scale < GLOW_MIN_ZOOM_SCALE:
+                zoom_scale = GLOW_MIN_ZOOM_SCALE
 
-            var glow_factor = t * glow_intensity * zoom_scale
+        var glow_factor = t * glow_intensity * zoom_scale
+        var glow_add = glow_factor * GLOW_MAX_ADD
 
-            var final_r = base_r
-            var final_g = base_g
-            var final_b = base_b
+        var final_r = clamp(base_r + glow_add, 0.0, 255.0)
+        var final_g = clamp(base_g + glow_add, 0.0, 255.0)
+        var final_b = clamp(base_b + glow_add, 0.0, 255.0)
 
-            var glow_add = glow_factor * GLOW_MAX_ADD
-            final_r = final_r + glow_add
-            final_g = final_g + glow_add
-            final_b = final_b + glow_add
-
-            if final_r > 255.0:
-                final_r = 255.0
-            if final_g > 255.0:
-                final_g = 255.0
-            if final_b > 255.0:
-                final_b = 255.0
-
-            r = UInt8(final_r)
-            g = UInt8(final_g)
-            b = UInt8(final_b)
+        r = UInt8(final_r)
+        g = UInt8(final_g)
+        b = UInt8(final_b)
 
     var rgb_idx = (py * width + px) * 3
     rgb_output[rgb_idx] = r

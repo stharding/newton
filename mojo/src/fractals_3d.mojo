@@ -4,19 +4,29 @@ This module provides distance estimator functions for 3D fractals,
 designed for use with ray marching in GPU kernels.
 """
 
-from math import sin, cos, sqrt, log2
+from math import cos, log2, pi, sin, sqrt
 
-from gpu_math import gpu_pow, gpu_acos, gpu_atan2
+from gpu_math import gpu_acos, gpu_atan2
 
 
 # ============================================================================
 # Constants for 3D Ray Marching
 # ============================================================================
 
-comptime MAX_STEPS: Int = 256          # Max ray march iterations
-comptime MAX_DIST: Float32 = 10.0      # Max ray travel distance
-comptime EPSILON: Float32 = 0.0005     # Surface hit threshold
-comptime NORMAL_EPSILON: Float32 = 0.001  # Gradient sampling offset
+comptime MAX_STEPS: Int = 256
+"""Maximum ray march iterations."""
+
+comptime MAX_DIST: Float32 = 10.0
+"""Maximum ray travel distance before giving up."""
+
+comptime EPSILON: Float32 = 0.0005
+"""Surface hit threshold - ray closer than this is considered a hit."""
+
+comptime NORMAL_EPSILON: Float32 = 0.001
+"""Gradient sampling offset for normal calculation."""
+
+comptime LN2_32: Float32 = 0.693147180559945
+"""Natural log of 2, for distance estimation formula."""
 
 
 # ============================================================================
@@ -35,12 +45,12 @@ fn mandelbulb_de(
     Returns 0.5 * r * ln(r) / dr where dr tracks the derivative.
 
     Args:
-        x, y, z: Point to evaluate distance from
-        power: Mandelbulb power parameter (classic is 8.0)
-        imax: Maximum iterations for convergence
+        x, y, z: Point to evaluate distance from.
+        power: Mandelbulb power parameter (classic is 8.0).
+        imax: Maximum iterations for convergence.
 
     Returns:
-        Estimated distance to the Mandelbulb surface
+        Estimated distance to the Mandelbulb surface.
     """
     var zx = x
     var zy = y
@@ -59,10 +69,11 @@ fn mandelbulb_de(
         var phi = gpu_atan2(zy, zx)
 
         # Update derivative: dr = dr * n * r^(n-1) + 1
-        dr = gpu_pow(r, power - Float32(1.0)) * power * dr + Float32(1.0)
+        # Using ** operator which works on GPU via exp2/log2
+        dr = (r ** (power - Float32(1.0))) * power * dr + Float32(1.0)
 
         # Compute z^n using spherical coords
-        var zr = gpu_pow(r, power)
+        var zr = r ** power
         var new_theta = theta * power
         var new_phi = phi * power
 
@@ -73,5 +84,4 @@ fn mandelbulb_de(
         zz = zr * cos(new_theta) + z
 
     # Distance estimate: 0.5 * r * ln(r) / dr
-    # Note: ln(r) = log2(r) * ln(2) ≈ log2(r) * 0.693147
-    return Float32(0.5) * r * log2(r) * Float32(0.693147180559945) / dr
+    return Float32(0.5) * r * log2(r) * LN2_32 / dr
