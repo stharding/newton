@@ -51,15 +51,20 @@ fn write_smooth_color[
     imax: Int,
     final_r2: Float64,
     color_seed: Float64,
+    power: Float32 = 2.0,
 ):
-    """Apply smooth coloring based on escape iteration count."""
+    """Apply smooth coloring based on escape iteration count.
+
+    The power parameter adjusts the smooth iteration formula for z^p fractals.
+    """
     if iterations == imax:
         output[pixel_idx] = 0
         output[pixel_idx + 1] = 0
         output[pixel_idx + 2] = 0
     else:
-        var log_zn = Float32(0.5) * log2(Float32(final_r2))
-        var smooth_iter = Float32(iterations) + Float32(1.0) - log2(log_zn)
+        var log_zn = Float32(0.5) * log2(Float32(final_r2))  # log2(|z|)
+        # For z^p iteration, divide by log2(p) to normalize the smoothing
+        var smooth_iter = Float32(iterations) + Float32(1.0) - log2(log_zn) / log2(power)
 
         var t = smooth_iter * COLOR_FREQUENCY + Float32(color_seed)
         t = t - Float32(Int(t))
@@ -194,7 +199,7 @@ fn julia_kernel[
                 z = ComplexFloat64(Float64(mag * cos(angle)), Float64(mag * sin(angle))) + c
 
     var pixel_idx = (py * width + px) * 3
-    write_smooth_color[output_layout](output, pixel_idx, iterations, imax, final_r2, color_seed)
+    write_smooth_color[output_layout](output, pixel_idx, iterations, imax, final_r2, color_seed, Float32(power_re))
 
 
 # ============================================================================
