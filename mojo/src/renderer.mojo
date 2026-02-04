@@ -4,6 +4,7 @@ from os import abort
 from python import Python, PythonObject
 from python.bindings import PythonModuleBuilder
 from math import atan2, ceildiv
+from gpu import global_idx
 from gpu.host import DeviceContext, HostBuffer, DeviceBuffer
 from layout import Layout, LayoutTensor
 from sys import has_accelerator
@@ -11,6 +12,7 @@ from sys import has_accelerator
 from kernels_newton import newton_kernel, colorize_kernel
 from kernels_2d import mandelbrot_kernel, julia_kernel, burning_ship_kernel, tricorn_kernel
 from kernels_3d import mandelbulb_kernel
+from kernels_deep import mandelbrot_perturbation_kernel
 
 
 # ============================================================================
@@ -294,6 +296,60 @@ fn _init_newton_params(out self: NewtonParams, args: PythonObject, kwargs: Pytho
         zoom = Float64(py=kwargs["zoom"])
 
     self = NewtonParams(width, height, left, right, top, bottom, tolerance, imax, color_seed, glow_intensity, zoom)
+
+
+# ============================================================================
+# DeepZoomParams - Struct for deep zoom Mandelbrot rendering
+# ============================================================================
+
+@fieldwise_init
+struct DeepZoomParams(TrivialRegisterType, Representable):
+    """Parameters for deep zoom Mandelbrot rendering using perturbation theory.
+
+    The reference orbit is passed separately as numpy arrays.
+    ref_offset_re/im is the offset from VIEW CENTER to REFERENCE ORBIT center.
+    """
+    var width: Int
+    var height: Int
+    var delta_per_pixel: Float64
+    var ref_offset_re: Float64  # Offset from view center to orbit center (real)
+    var ref_offset_im: Float64  # Offset from view center to orbit center (imag)
+    var imax: Int
+    var color_seed: Float64
+
+    fn __repr__(self) -> String:
+        """String representation for Python."""
+        return String("DeepZoomParams(width=") + String(self.width) + ", height=" + String(self.height) + ", ...)"
+
+
+fn _init_deep_zoom_params(out self: DeepZoomParams, args: PythonObject, kwargs: PythonObject) raises:
+    """Initialize DeepZoomParams from Python keyword arguments with defaults."""
+    # Default values
+    var width = 800
+    var height = 600
+    var delta_per_pixel = Float64(0.005)  # Default for zoom level 0
+    var ref_offset_re = Float64(0.0)
+    var ref_offset_im = Float64(0.0)
+    var imax = 1000
+    var color_seed = Float64(0.0)
+
+    # Override with any provided kwargs
+    if "width" in kwargs:
+        width = Int(py=kwargs["width"])
+    if "height" in kwargs:
+        height = Int(py=kwargs["height"])
+    if "delta_per_pixel" in kwargs:
+        delta_per_pixel = Float64(py=kwargs["delta_per_pixel"])
+    if "ref_offset_re" in kwargs:
+        ref_offset_re = Float64(py=kwargs["ref_offset_re"])
+    if "ref_offset_im" in kwargs:
+        ref_offset_im = Float64(py=kwargs["ref_offset_im"])
+    if "imax" in kwargs:
+        imax = Int(py=kwargs["imax"])
+    if "color_seed" in kwargs:
+        color_seed = Float64(py=kwargs["color_seed"])
+
+    self = DeepZoomParams(width, height, delta_per_pixel, ref_offset_re, ref_offset_im, imax, color_seed)
 
 
 # ============================================================================
@@ -740,6 +796,377 @@ fn _render_mandelbulb_impl(
 
 
 # ============================================================================
+# Find best reference point for perturbation rendering
+# ============================================================================
+
+fn find_best_reference_point(params_obj: PythonObject) raises -> PythonObject:
+    """Find the pixel with highest iteration count in the current view.
+
+    This helps find a good reference point for perturbation rendering
+    when the view center escapes quickly.
+
+    Args:
+        params_obj: A ViewParams instance with view window parameters.
+
+    Returns:
+        Python tuple (px, py, iterations) of best pixel coordinates and its iteration count.
+    """
+    var params_ptr = params_obj.downcast_value_ptr[ViewParams]()
+    var width = params_ptr[].width
+    var height = params_ptr[].height
+    var left = params_ptr[].left
+    var right = params_ptr[].right
+    var top = params_ptr[].top
+    var bottom = params_ptr[].bottom
+    var imax = params_ptr[].imax
+
+    # Sample a grid of points (not every pixel - that would be too slow)
+    var sample_step = 8  # Sample every 8th pixel
+    var sample_width = ceildiv(width, sample_step)
+    var sample_height = ceildiv(height, sample_step)
+    var num_samples = sample_width * sample_height
+
+    var ctx = DeviceContext()
+
+    # Buffer to store iteration counts for each sample
+    var iters_device = ctx.enqueue_create_buffer[DType.int32](num_samples)
+    var iters_host = ctx.enqueue_create_host_buffer[DType.int32](num_samples)
+    ctx.synchronize()
+
+    var iters_tensor = LayoutTensor[DType.int32, L](iters_device)
+    var grid_x: Int
+    var grid_y: Int
+    grid_x, grid_y = compute_grid(sample_width, sample_height)
+
+    # Launch kernel to compute iteration counts
+    ctx.enqueue_function[
+        _sample_iterations_kernel[L],
+        _sample_iterations_kernel[L],
+    ](
+        iters_tensor,
+        sample_width, sample_height,
+        width, height,
+        sample_step,
+        left, right, top, bottom,
+        imax,
+        grid_dim=(grid_x, grid_y),
+        block_dim=(BLOCK_SIZE, BLOCK_SIZE),
+    )
+
+    ctx.enqueue_copy(iters_host, iters_device)
+    ctx.synchronize()
+
+    # Find the sample with highest iteration count
+    var best_idx = 0
+    var best_iters = Int(iters_host[0])
+    for i in range(1, num_samples):
+        var iter_count = Int(iters_host[i])
+        if iter_count > best_iters:
+            best_iters = iter_count
+            best_idx = i
+
+    # Convert sample index back to pixel coordinates
+    var sample_x = best_idx % sample_width
+    var sample_y = best_idx // sample_width
+    var best_px = sample_x * sample_step
+    var best_py = sample_y * sample_step
+
+    # Return as Python tuple
+    return Python.tuple(best_px, best_py, best_iters)
+
+
+fn find_best_reference_deep(params_obj: PythonObject) raises -> PythonObject:
+    """Find best reference point using CPU iteration with delta coordinates.
+
+    Uses Float64 approximation of center + exact deltas. While the absolute
+    coordinates lose precision at deep zoom, the RELATIVE comparison between
+    pixels remains valid for finding which pixel escapes latest.
+
+    Args:
+        params_obj: Tuple of (center_re, center_im, width, height, delta_per_pixel, imax, sample_step).
+
+    Returns:
+        Python tuple (px, py, iterations) of best pixel coordinates.
+    """
+    var center_re = Float64(py=params_obj[0])
+    var center_im = Float64(py=params_obj[1])
+    var width = Int(py=params_obj[2])
+    var height = Int(py=params_obj[3])
+    var delta_per_pixel = Float64(py=params_obj[4])
+    var imax = Int(py=params_obj[5])
+    var sample_step = Int(py=params_obj[6])
+    var best_px = width // 2
+    var best_py = height // 2
+    var best_iters = 0
+
+    # Sample grid
+    for sy in range(0, height, sample_step):
+        for sx in range(0, width, sample_step):
+            # Compute delta from center (exact in Float64)
+            var dx = Float64(sx) - Float64(width) / 2.0
+            var dy = Float64(sy) - Float64(height) / 2.0
+            var delta_re = dx * delta_per_pixel
+            var delta_im = -dy * delta_per_pixel  # Negate for standard orientation
+
+            # Absolute c = center + delta (center is approximate, delta is exact)
+            var c_re = center_re + delta_re
+            var c_im = center_im + delta_im
+
+            # Standard Mandelbrot iteration
+            var z_re = Float64(0.0)
+            var z_im = Float64(0.0)
+            var iterations = imax
+
+            for count in range(imax):
+                var z_re2 = z_re * z_re
+                var z_im2 = z_im * z_im
+                if z_re2 + z_im2 > 256.0:
+                    iterations = count
+                    break
+                var new_im = 2.0 * z_re * z_im + c_im
+                z_re = z_re2 - z_im2 + c_re
+                z_im = new_im
+
+            if iterations > best_iters:
+                best_iters = iterations
+                best_px = sx
+                best_py = sy
+
+                # Early exit if we found a non-escaping point
+                if iterations == imax:
+                    return Python.tuple(best_px, best_py, best_iters)
+
+    return Python.tuple(best_px, best_py, best_iters)
+
+
+fn find_best_reference_perturbation(
+    params_obj: PythonObject,
+    ref_orbit_re: PythonObject,
+    ref_orbit_im: PythonObject,
+) raises -> PythonObject:
+    """Find best reference point using perturbation with previous orbit.
+
+    This uses the previous frame's reference orbit to accurately search for
+    a new reference point, even at deep zoom where Float64 loses precision.
+
+    Args:
+        params_obj: Tuple of (center_offset_re, center_offset_im, width, height, delta_per_pixel, imax, sample_step).
+                    center_offset is the offset from OLD reference to NEW view center.
+        ref_orbit_re: Previous reference orbit real parts (numpy array).
+        ref_orbit_im: Previous reference orbit imaginary parts (numpy array).
+
+    Returns:
+        Python tuple (px, py, iterations) of best pixel coordinates.
+    """
+    var center_offset_re = Float64(py=params_obj[0])
+    var center_offset_im = Float64(py=params_obj[1])
+    var width = Int(py=params_obj[2])
+    var height = Int(py=params_obj[3])
+    var delta_per_pixel = Float64(py=params_obj[4])
+    var imax = Int(py=params_obj[5])
+    var sample_step = Int(py=params_obj[6])
+    var orbit_length = Int(py=len(ref_orbit_re))
+
+    var best_px = width // 2
+    var best_py = height // 2
+    var best_iters = 0
+
+    # Sample grid using perturbation iteration
+    for sy in range(0, height, sample_step):
+        for sx in range(0, width, sample_step):
+            # Compute pixel's delta from NEW view center
+            var dx = Float64(sx) - Float64(width) / 2.0
+            var dy = Float64(sy) - Float64(height) / 2.0
+            var pixel_delta_re = dx * delta_per_pixel
+            var pixel_delta_im = -dy * delta_per_pixel
+
+            # Total delta from OLD reference = center_offset + pixel_delta
+            var delta_c_re = center_offset_re + pixel_delta_re
+            var delta_c_im = center_offset_im + pixel_delta_im
+
+            # Perturbation iteration using previous orbit
+            var delta_re = Float64(0.0)
+            var delta_im = Float64(0.0)
+            var iterations = imax
+
+            for n in range(imax):
+                if n >= orbit_length:
+                    # Ran out of reference orbit
+                    break
+
+                # Get Z_n from reference orbit
+                var Z_re = Float64(py=ref_orbit_re[n])
+                var Z_im = Float64(py=ref_orbit_im[n])
+
+                # Full position: z = Z + δ
+                var z_re = Z_re + delta_re
+                var z_im = Z_im + delta_im
+
+                # Check escape
+                var z_norm_sq = z_re * z_re + z_im * z_im
+                if z_norm_sq > 256.0:
+                    iterations = n
+                    break
+
+                # Perturbation update: δ = (2Z + δ)·δ + Δc
+                var two_Z_plus_d_re = 2.0 * Z_re + delta_re
+                var two_Z_plus_d_im = 2.0 * Z_im + delta_im
+
+                # Complex multiply: (a+bi)(c+di) = (ac-bd) + (ad+bc)i
+                var new_delta_re = two_Z_plus_d_re * delta_re - two_Z_plus_d_im * delta_im + delta_c_re
+                var new_delta_im = two_Z_plus_d_re * delta_im + two_Z_plus_d_im * delta_re + delta_c_im
+                delta_re = new_delta_re
+                delta_im = new_delta_im
+
+            if iterations > best_iters:
+                best_iters = iterations
+                best_px = sx
+                best_py = sy
+
+                # Early exit if we found a non-escaping point
+                if iterations == imax:
+                    return Python.tuple(best_px, best_py, best_iters)
+
+    return Python.tuple(best_px, best_py, best_iters)
+
+
+fn _sample_iterations_kernel[
+    output_layout: Layout,
+](
+    output: LayoutTensor[DType.int32, output_layout, MutAnyOrigin],
+    sample_width: Int,
+    sample_height: Int,
+    full_width: Int,
+    full_height: Int,
+    sample_step: Int,
+    window_left: Float64,
+    window_right: Float64,
+    window_top: Float64,
+    window_bottom: Float64,
+    imax: Int,
+):
+    """GPU kernel to sample iteration counts at grid points."""
+    var sx = Int(global_idx.x)
+    var sy = Int(global_idx.y)
+
+    if sx >= sample_width or sy >= sample_height:
+        return
+
+    # Convert sample coordinates to full image pixel coordinates
+    var px = sx * sample_step
+    var py = sy * sample_step
+
+    # Convert pixel to complex coordinate
+    var re = window_left + (Float64(px) / Float64(full_width)) * (window_right - window_left)
+    var im = window_top + (Float64(py) / Float64(full_height)) * (window_bottom - window_top)
+
+    # Standard Mandelbrot iteration
+    var z_re = Float64(0.0)
+    var z_im = Float64(0.0)
+    var iterations = imax
+
+    for count in range(imax):
+        var z_re2 = z_re * z_re
+        var z_im2 = z_im * z_im
+        if z_re2 + z_im2 > 256.0:
+            iterations = count
+            break
+        z_im = 2.0 * z_re * z_im + im
+        z_re = z_re2 - z_im2 + re
+
+    # Store iteration count
+    var sample_idx = sy * sample_width + sx
+    output[sample_idx] = Int32(iterations)
+
+
+# ============================================================================
+# Deep zoom Mandelbrot renderer (perturbation theory)
+# ============================================================================
+
+fn render_mandelbrot_deep(
+    params_obj: PythonObject,
+    ref_orbit_re: PythonObject,
+    ref_orbit_im: PythonObject,
+) raises -> PythonObject:
+    """Render deep zoom Mandelbrot using perturbation theory.
+
+    Args:
+        params_obj: A DeepZoomParams instance with rendering parameters.
+        ref_orbit_re: NumPy array of reference orbit real parts (Float64).
+        ref_orbit_im: NumPy array of reference orbit imaginary parts (Float64).
+
+    Returns:
+        RGB numpy array of shape (height, width, 3).
+    """
+    var params_ptr = params_obj.downcast_value_ptr[DeepZoomParams]()
+    var width = params_ptr[].width
+    var height = params_ptr[].height
+    var delta_per_pixel = params_ptr[].delta_per_pixel
+    var ref_offset_re = params_ptr[].ref_offset_re
+    var ref_offset_im = params_ptr[].ref_offset_im
+    var imax = params_ptr[].imax
+    var color_seed = params_ptr[].color_seed
+
+    # Get orbit length from numpy array
+    var orbit_length = Int(py=len(ref_orbit_re))
+
+    var ctx = DeviceContext()
+    var rgb_size = width * height * 3
+
+    # Create buffers
+    var orbit_re_host = ctx.enqueue_create_host_buffer[DType.float64](orbit_length)
+    var orbit_im_host = ctx.enqueue_create_host_buffer[DType.float64](orbit_length)
+    var orbit_re_device = ctx.enqueue_create_buffer[DType.float64](orbit_length)
+    var orbit_im_device = ctx.enqueue_create_buffer[DType.float64](orbit_length)
+    var rgb_device = ctx.enqueue_create_buffer[DType.uint8](rgb_size)
+    var rgb_host = ctx.enqueue_create_host_buffer[DType.uint8](rgb_size)
+    ctx.synchronize()
+
+    # Copy reference orbit to host buffers
+    for i in range(orbit_length):
+        orbit_re_host[i] = Float64(py=ref_orbit_re[i])
+        orbit_im_host[i] = Float64(py=ref_orbit_im[i])
+
+    # Transfer to GPU
+    ctx.enqueue_copy(orbit_re_device, orbit_re_host)
+    ctx.enqueue_copy(orbit_im_device, orbit_im_host)
+    ctx.synchronize()
+
+    # Create tensors
+    var orbit_re_tensor = LayoutTensor[DType.float64, L](orbit_re_device)
+    var orbit_im_tensor = LayoutTensor[DType.float64, L](orbit_im_device)
+    var rgb_tensor = LayoutTensor[DType.uint8, L](rgb_device)
+
+    var grid_x: Int
+    var grid_y: Int
+    grid_x, grid_y = compute_grid(width, height)
+
+    # Launch perturbation kernel
+    ctx.enqueue_function[
+        mandelbrot_perturbation_kernel[L, L],
+        mandelbrot_perturbation_kernel[L, L],
+    ](
+        rgb_tensor,
+        orbit_re_tensor,
+        orbit_im_tensor,
+        orbit_length,
+        width, height,
+        delta_per_pixel,
+        ref_offset_re,
+        ref_offset_im,
+        imax,
+        color_seed,
+        grid_dim=(grid_x, grid_y),
+        block_dim=(BLOCK_SIZE, BLOCK_SIZE),
+    )
+
+    ctx.enqueue_copy(rgb_host, rgb_device)
+    ctx.synchronize()
+
+    return host_buffer_to_numpy(rgb_host, width, height)
+
+
+# ============================================================================
 # GPU info functions
 # ============================================================================
 
@@ -773,10 +1200,12 @@ fn PyInit_renderer() -> PythonObject:
         m.add_type[ViewParams]("ViewParams").def_py_init[_init_view_params]()
         m.add_type[MandelbulbParams]("MandelbulbParams").def_py_init[_init_mandelbulb_params]()
         m.add_type[NewtonParams]("NewtonParams").def_py_init[_init_newton_params]()
+        m.add_type[DeepZoomParams]("DeepZoomParams").def_py_init[_init_deep_zoom_params]()
 
         # Register render functions
         m.def_function[render_newton]("render_newton", docstring="Render Newton fractal")
         m.def_function[render_mandelbrot]("render_mandelbrot", docstring="Render Mandelbrot set")
+        m.def_function[render_mandelbrot_deep]("render_mandelbrot_deep", docstring="Render deep zoom Mandelbrot with perturbation")
         m.def_function[render_julia]("render_julia", docstring="Render Julia set")
         m.def_function[render_burning_ship]("render_burning_ship", docstring="Render Burning Ship fractal")
         m.def_function[render_tricorn]("render_tricorn", docstring="Render Tricorn fractal")
@@ -785,6 +1214,9 @@ fn PyInit_renderer() -> PythonObject:
         # Utility functions
         m.def_function[has_gpu]("has_gpu", docstring="Check GPU availability")
         m.def_function[get_gpu_name]("get_gpu_name", docstring="Get GPU name")
+        m.def_function[find_best_reference_point]("find_best_reference_point", docstring="Find best reference point for perturbation rendering")
+        m.def_function[find_best_reference_deep]("find_best_reference_deep", docstring="Find best reference point using CPU with delta coordinates")
+        m.def_function[find_best_reference_perturbation]("find_best_reference_perturbation", docstring="Find best reference point using perturbation with previous orbit")
         return m.finalize()
     except e:
         abort(String("failed to create module: ", e))

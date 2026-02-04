@@ -38,6 +38,13 @@ cd mojo/src
 pixi run python viewer.py   # Launch interactive fractal viewer
 ```
 
+### Deep Zoom Viewer (Mojo GPU + mpmath)
+```bash
+cd mojo/src
+pixi run python viewer_deep.py   # Launch deep zoom Mandelbrot viewer
+```
+Enables arbitrary-depth zoom (10^100+) using perturbation theory with mpmath for arbitrary-precision reference orbits.
+
 **Building newton_renderer.mojo:** This module is compiled automatically on first import via Mojo's Python interop (`mojo.importer`). The compiled `.so` is cached in `__mojocache__/`. To force recompilation after editing:
 ```bash
 cd mojo/src
@@ -68,6 +75,13 @@ pixi run python viewer.py   # Recompiles on import
 - Key dispatch via `_KEY_HANDLERS` dict mapping keys to actions
 - Main loop is 5 lines: handle events → handle continuous input → render if needed
 
+**Deep Zoom Viewer** (`mojo/src/viewer_deep.py`):
+- Uses perturbation theory to render Mandelbrot at arbitrary zoom depths
+- `ReferenceOrbit` class (in `deep_zoom.py`) computes reference orbit with mpmath
+- GPU kernel (`kernels_deep.mojo`) computes small perturbations δ from reference orbit
+- Formula: `δ_{n+1} = 2·Z_n·δ_n + δ_n² + Δc` where Z_n is reference, δ is perturbation
+- Glitch detection marks pixels where perturbation grows too large
+
 ## Mojo-Specific Notes
 
 - Uses pixi for environment management (conda-based, includes `max` package)
@@ -75,6 +89,11 @@ pixi run python viewer.py   # Recompiles on import
 - Python interop for PIL image output: `from python import Python, PythonObject`
 - Batched pixel writes via `img.putdata()` for performance
 - Run from `mojo/src/` directory so moclap import resolves
+- **IMPORTANT**: To import Mojo modules from Python, you MUST import `mojo.importer` first:
+  ```python
+  import mojo.importer  # Required before importing any Mojo module
+  import renderer        # Now this works
+  ```
 
 ## Mojo Syntax Reference (nightly 2025+)
 
